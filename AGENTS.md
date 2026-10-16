@@ -132,6 +132,14 @@ claim a check passed without running it.
 - **Validate uploads:** file type, size limits, media types. Reject
   anything else. Treat menu images, reviews, and all user input as
   untrusted.
+- **Scan images are private processing, not publication:** a menu
+  photo is sent to the backend + AI provider for extraction, stored
+  as a private `MediaAsset` (temp storage, retention limit —
+  unsubmitted images deleted, deletion recorded; disclosure before
+  scanning). Extraction never auto-publishes; contributing is a
+  separate explicit action with confirmation. The shared/published
+  menu must never contain private user preferences or order
+  details.
 - **No executable code from AI, ever.** AI emits validated structured
   data only. No AI-generated JSX, JavaScript, HTML, CSS, or template
   code. Templates reference a fixed control registry; the renderer maps
@@ -141,6 +149,23 @@ claim a check passed without running it.
   secrets. Avoid logging sensitive user information.
 - **Authorization on every admin mutation.** Authenticated + authorized
   + audited. No admin route ships without an authz check.
+- **Auth = Better Auth + Google only (ADR 0001, amended by ADR
+  0003).** One instance in the Effect backend; frontends are
+  clients. Guest-first customer; sign-in at save moments and for
+  reviews / persistent contributor profiles. Anonymous guests may
+  *submit* menu scans, corrections, and price reports — all enter
+  `pending_review`, never auto-published, MVP manual approval.
+  Scan and submit are separate actions: scanning needs no account
+  and never auto-creates a contribution, but it is NOT local-only —
+  images are processed privately server-side (backend + AI
+  provider), temp storage + retention limits + privacy disclosure;
+  submitting needs an explicit confirmation before extracted data
+  is shared for moderation. `Contribution.ownerUserId` is nullable
+  (`ON DELETE SET NULL`) + immutable attribution snapshot; the
+  snapshot is internal-only — public surfaces expose only the
+  display label, never user ids/emails. Google sign-in never grants
+  admin — admin is a DB role checked server-side per request. No
+  custom OAuth, no second provider, no client-side authz.
 - **Separate public and private media.** Raw receipts and sensitive
   evidence live in a private bucket, never publicly accessible.
   Public assets use stable resource ids.

@@ -92,7 +92,7 @@ Full behavior lives in `user-journeys.md`; rendering rules in `menu-rendering.md
 
 1. **Personalized onboarding** — short, skippable; up to 5 favorite dishes; dietary restrictions, allergies, religious requirements (only when explicitly provided), spice tolerance, budget, adventurousness. Country/region may suggest familiar dishes but must never infer religion, dietary rules, or taste from nationality. Explicit preferences beat demographic assumptions.
 2. **AI-powered food discovery** — natural-language intent → validated structured search intent → ranked dishes, combined with preferences, constraints, location, availability, price observations, dish characteristics, meal context.
-3. **Dish-first discovery** — dish pages: canonical local name, aliases/spellings, translated name, description, ingredients, allergens, dietary notes, origin, meal occasion, flavor/texture, similar familiar foods, typical price range, nearby restaurants serving it. Regional variants are explicit, not collapsed.
+3. **Dish-first discovery** — dish pages: canonical local name, aliases/spellings, translated name, description, ingredients, allergens, dietary notes, origin, meal occasion, flavor/texture, similar familiar foods, typical price range, nearby restaurants serving it. Regional variants are explicit, not collapsed — shown as variant-labelled menu items grouped on the dish page (`MenuItem.variantLabel`; no separate `DishVariant` table — ADR 0002).
 4. **Map + local price intelligence** — interactive map; filters by dish, distance, price, dietary suitability, restaurant attributes, reviews, personal relevance. Dish-level price context (e.g. observed price vs. nearby typical range) with median/percentile estimates where evidence suffices; explicit "insufficient evidence" otherwise.
 5. **AI menu scanning** — photograph a physical menu → structured extraction (original names, translations, descriptions, prices/currencies, categories, sizes, options, modifiers, quantity pricing, instructions). Preserve original wording. Missing/uncertain stays `unknown`. User can correct.
 6. **Interactive menu generation** — extracted menu becomes an interactive ordering UI via **schema-driven rendering** (see §6). Browse categories, understand dishes, select items/sizes/modifiers, set quantities, add special requests, review estimated total, see dietary warnings/uncertainties.
@@ -162,7 +162,7 @@ Explicitly out — do not build, do not imply in UI copy:
 | # | Assumption | Why it is safe to assume now |
 |---|---|---|
 | A1 | Customer app default languages: English + Vietnamese; staff view defaults to Vietnamese for HCMC seed | Matches geography; locale system generalizes |
-| A2 | Anonymous / lightweight identity is enough for the hackathon demo; full auth can be minimal (admin auth required, customer optional) | Demo needs low friction; admin mutations still require auth |
+| A2 | RESOLVED 2026-10-16 (ADR 0001): Better Auth + Google-only; guest-first customer (anonymous-plugin guests), admin = session + server-side RequireAdmin, Google never auto-grants admin. | Demo needs low friction; admin mutations still require auth |
 | A3 | Seed data will be hand-curated + clearly labeled demo observations, not scraped | Avoids legal/quality risk; sufficient for demo |
 | A4 | One backend deployment with domain modules, not microservices | Explicit constraint in master prompt §14 |
 | A5 | Map tiles via an OSM-compatible provider with attribution (e.g. CARTO / OSM tile usage within terms) | MapLibre GL JS requirement; exact provider chosen at BUILD |
@@ -174,7 +174,7 @@ Explicitly out — do not build, do not imply in UI copy:
 |---|---|---|---|
 | O1 | AI provider(s) + model(s) for menu extraction vs. intent extraction (same or different?) | BUILD kickoff | Prompt registry + cost/latency assumptions |
 | O2 | Exact map tile provider + rate-limit budget | BUILD kickoff | Map reliability in demo |
-| O3 | Auth approach for customer (anonymous vs. optional account) and admin (what IdP / session model) | Before auth code | Blocks contribution + admin work |
+| O3 | RESOLVED 2026-10-16 (ADR 0001): Better Auth + Google; guest-first customer, admin via DB role + RequireAdmin. See `docs/auth.md`. | Before auth code | Blocks contribution + admin work |
 | O4 | Single schema source of truth: Effect Schema vs. Zod (PoC required per master prompt §4.4) | Before shared contracts | Duplicate contracts across stack |
 | O5 | Deployment targets (where backend, frontends, Postgres, R2 live) | Before infra work | Demo reproducibility |
 | O6 | Moderation workflow depth for hackathon (manual review queue vs. auto-publish with flags) | Before contributions work | Trust + demo risk |

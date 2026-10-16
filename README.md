@@ -71,7 +71,7 @@ field, or a later extension:
 | `MenuItemOption` | A documented size / modifier / choice group on a `MenuItem`. Only options present in the evidence exist. No invented options. |
 | `Dish` | Canonical, restaurant-independent dish (e.g. Cơm tấm): canonical name, aliases, ingredients (known vs. common), allergens, dietary notes, origin, flavor/texture. Linked from `MenuItem` by a nullable, confidence-scored mapping — mapping is a guess, never a fact. |
 | `PriceObservation` | One price evidence event: source type (`menu-listed` vs `receipt-paid`), amount, currency, dish/menu-item ref, observed-at, confidence. Listed ≠ paid; keep them distinct. |
-| `Contribution` | The provenance wrapper for a user-submitted scan/receipt/correction: who (pseudonymous), what, source refs, status, moderation decision. Private profile/order data is never part of it. |
+| `Contribution` | The provenance wrapper for a user-submitted scan/receipt/correction: who (pseudonymous; anonymous evidence submissions allowed, `pending_review`, never auto-published — ADR 0003), what, source refs, status, moderation decision. Owner FK nullable (`ON DELETE SET NULL`) + immutable attribution snapshot so contributions survive anonymous-user deletion. Private profile/order data is never part of it. |
 | `OrderDraft` | Ephemeral, user-private selection state: snapshot ref + chosen items/options/quantities + free-text notes (flagged as unconfirmed) + estimated total. Never stored inside a shared snapshot. |
 | `AIExecution` | Audit record for one AI call: task, prompt version, model id, input refs (not raw PII), output validation result, latency, token/cost if available. |
 
@@ -536,7 +536,7 @@ decision or a verified fact.
 
 | # | Question | Owner | Unblocks BUILD when… |
 |---|---|---|---|
-| P1 | Is anonymous demo (no account) acceptable, or must travelers sign in? | Product / user | Decision recorded; auth scope fixed (anonymous demo + admin login is the assumed default) |
+| P1 | ~~Is anonymous demo (no account) acceptable, or must travelers sign in?~~ **RESOLVED 2026-10-16 (ADR 0001): guest-first** — browsing, scanning, order drafts need no sign-in; Google Sign-In offered at save moments and for reviews / persistent contributor profiles (ADR 0003: submitting evidence needs no sign-in). | Product / user | ✅ Decision recorded in `docs/auth.md` + `docs/decisions/0001-better-auth-google.md` + `docs/decisions/0003-anonymous-contributions.md` |
 | P2 | Which HCMC seed restaurants/dishes (small curated set) may we use, and under what license/permission? | Product / data | Seed list + provenance note exists; no scraped data enters the repo |
 | P3 | What exactly may the demo claim about dietary safety? Confirm the four evidence tiers (known / common / confirmed / unknown) and the "never claim safe from absence" rule in demo copy. | Product | Wording approved; renderer shows tiers, never a bare "safe" badge |
 | P4 | Demo language set: Vietnamese + English only, or more? | Product | Locale list fixed; translation scope bounded |
@@ -562,8 +562,8 @@ decision or a verified fact.
 
 | # | Question | Owner | Unblocks BUILD when… |
 |---|---|---|---|
-| U1 | Admin auth mechanism (session? magic link? single admin seed account?) and who holds admin credentials during the demo? | Eng | Mechanism chosen; admin routes protected in M0, not bolted on later |
-| U2 | Do travelers need any account for contributions, or is contribution anonymous-with-moderation? | Product / eng | Decision recorded; Contribution model matches it |
+| U1 | ~~Admin auth mechanism (session? magic link? single admin seed account?) and who holds admin credentials during the demo?~~ **RESOLVED 2026-10-16 (ADR 0001):** Better Auth session + server-side `RequireAdmin` (DB role). Admin granted only explicitly (existing admin or audited seed allowlist); Google sign-in never auto-grants admin. | Eng | ✅ Mechanism chosen; admin routes protected in M0 |
+| U2 | ~~Do travelers need any account for contributions, or is contribution anonymous-with-moderation?~~ **RESOLVED 2026-10-17 (ADR 0003, amending ADR 0001):** anonymous guests may *submit* menu scans, corrections, and price reports — all enter `pending_review`, never auto-published, MVP keeps manual approval. Reviews + persistent contributor profiles still require Google sign-in. Scan and submit are separate actions (scanning is NOT local-only: images are processed privately server-side, temp storage + retention + disclosure — ADR 0003 §1); submitting needs explicit confirmation before extracted data is shared for moderation. Manual prices are never receipt-backed. | Product / eng | ✅ Decision recorded in `docs/decisions/0003-anonymous-contributions.md`; `auth.md`, `domain-model.md`, `data-provenance.md` reconciled |
 
 ### Demo logistics
 

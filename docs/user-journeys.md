@@ -82,7 +82,7 @@ User opens the app, or taps search on any screen.
 3. AI interprets input into **validated structured intent** (dish characteristics, ingredients to include/exclude, price ceiling + currency, dietary constraints, meal context). The app shows a compact "Understood as:" line with editable tokens (e.g. `spicy ✓` `beef ✓` `≤ 100,000 VND ✓` `no soup ✓`) so the user can correct misinterpretation without retyping.
 4. Deterministic retrieval + ranking returns dishes: hard constraints enforced by query logic (price, exclusions, dietary flags), soft ranking by preference similarity, availability, price evidence, meal context.
 5. Each dish card shows: photo (if available), canonical local name + translated name, one-line description, flavor/texture tags, typical price range with evidence state, dietary suitability summary ("contains peanut — commonly" / "unknown preparation"), and "restaurants nearby" count.
-6. Tap a card → dish page: full details (aliases, ingredients, allergens, origin, meal occasion, flavor/texture, similar familiar foods, typical price range, nearby restaurants serving it). Regional variants listed explicitly where they exist.
+6. Tap a card → dish page: full details (aliases, ingredients, allergens, origin, meal occasion, flavor/texture, similar familiar foods, typical price range, nearby restaurants serving it). Regional variants listed explicitly where they exist (variant-labelled menu items grouped on the dish page; no separate `DishVariant` table — ADR 0002).
 7. From the dish page, user can go to map (Journey 3) or to a restaurant's menu (Journey 4).
 
 ### Happy path
@@ -174,8 +174,8 @@ User taps **Scan menu** (home, restaurant page, or map card) and points the came
 ### Steps
 
 1. **Capture.** Camera view with framing guidance ("Fit the full menu in frame"). One shutter button. Multi-page menus: "Add another page" loop. Retake affordance per page. File validation: image type/size limits enforced before upload.
-2. **Extract.** Progress state with honest copy ("Reading your menu…") — no fake percentage. AI extracts structured menu data: original names, translated names, descriptions, prices + currencies, categories, sizes, options, modifiers, quantity pricing, instructions. Original wording preserved.
-3. **Confirm.** Review screen lists extracted items grouped by category, each with original name + translation + price. Uncertain items are flagged ("Low confidence — check price") and editable inline. User corrects names/prices, removes hallucinated items, adds missing ones. **Nothing is published or saved as a shared menu until the user confirms.**
+2. **Extract.** Progress state with honest copy ("Reading your menu…") — no fake percentage. The photo is sent to our backend and the AI provider for **private processing** (processing is not publication; disclosed before scanning — see `data-provenance.md` §5.2). AI extracts structured menu data: original names, translated names, descriptions, prices + currencies, categories, sizes, options, modifiers, quantity pricing, instructions. Original wording preserved.
+3. **Confirm.** Review screen lists extracted items grouped by category, each with original name + translation + price. Uncertain items are flagged ("Low confidence — check price") and editable inline. User corrects names/prices, removes hallucinated items, adds missing ones. **Confirming the extraction lets the traveler order — it does not publish or share anything.** Contributing the menu is a separate, explicit action (Journey 5).
 4. **Interactive menu.** The confirmed menu renders as an interactive ordering UI (schema-driven; see `menu-rendering.md`): browse categories, read dish explanations, select items, choose sizes / documented modifiers, set quantities, add special requests. Estimated total updates live. Dietary warnings/uncertainties appear inline on affected items.
 5. **Review order.** Order review screen: selected items in user's preferred language + original names, quantities, modifiers, special requests, estimated total (when supported by menu data). Clear distinction: confirmed restaurant options vs. free-text requests ("Restaurant may not support this — ask staff").
 6. **Bilingual staff view.** One screen, two halves (or toggle): customer view (user's language) + staff view (restaurant's language: original dish/modifier names, quantities, special requests translated, estimated total). Large type, high contrast. Copy states plainly: "Show this to staff. This is a request, not a confirmed order." User shows phone to staff. No payment, no submission, no implication of acceptance.
@@ -225,7 +225,7 @@ User confirms a menu extraction (Journey 4, step 3) and is offered "Share this m
 
 ### Steps
 
-1. After confirmation, contribution prompt: what will be shared (menu items, prices, restaurant identity, extraction timestamp, observed menu timestamp if known, source, confidence) and what will **not** be shared (profile, preferences, order selections, photos of receipts, identity). One-tap **Share** / **Keep private**.
+1. After confirmation, contribution prompt: what will be shared (extracted menu items, prices, restaurant identity, extraction timestamp, observed menu timestamp if known, source, confidence) and what will **not** be shared (profile, preferences, order selections, photos of receipts, identity, internal identifiers — public attribution is only a display label, "submitted by a traveler" for anonymous submissions). One-tap **Share** / **Keep private**. Note: the menu photo was already sent for private extraction (Journey 4, step 2); sharing applies to the extracted data, and the photo itself is never published without explicit moderation.
 2. Shared menu enters moderation: `pending` → `published` / `rejected` (with reason). Admin reviews original image, extracted items, uncertainties, and dish mappings (see `admin-design.md`).
 3. Versioning: a new observation for the same restaurant creates a new `MenuSnapshot` version; history is preserved. A re-scan is compared against the current published menu and changes are surfaced ("3 prices changed, 1 item added").
 4. Reuse: the next traveler opening that restaurant sees "Menu from [date], verified [status]" and uses it directly without scanning. Staleness is labeled.
@@ -240,7 +240,7 @@ User shares a menu; the next traveler at the same restaurant opens it instantly 
 
 | State | Behavior |
 |---|---|
-| User declines to share | Menu still works for their own order; nothing is published; no nagging. |
+| User declines to share | Menu still works for their own order; nothing is published; no nagging. The unsubmitted scan image is deleted per the retention rule (`data-provenance.md` §5.2). |
 | Contribution conflicts with published menu | Both versions retained; moderation resolves; user sees "Under review" if they revisit. |
 | Receipt contains personal / transactional info | Raw image stays private; only extracted price observations (with taxes/discounts/combos noted) enter the public pipeline after review. |
 | Correction is disputed | Provenance + history preserved; moderation decides; no silent overwrite. |
@@ -263,6 +263,6 @@ The Share / Keep-private choice is one screen, one tap each, with a plain-langua
 ## Cross-Journey Notes
 
 - **Navigation:** Bottom nav (mobile): Discover · Map · Scan · Saved / Profile. Scan is always one tap away.
-- **Saved state:** Favorite dishes, saved restaurants, and recent menus persist across sessions (local or account, per decision O8 in `product.md`).
+- **Saved state:** Favorite dishes, saved restaurants, and recent menus persist across sessions for signed-in users (Better Auth + Google). Guests hold an in-progress draft on the device via an anonymous-plugin session; signing in claims it into the account (`onLinkAccount`) without losing the current menu/order. Sign-in is offered at save moments and for reviews / persistent contributor profiles (ADR 0003: submitting evidence does not require sign-in), never as a gate in front of scanning, ordering, or submitting evidence. See `docs/auth.md` §6.
 - **Offline:** Reading a previously loaded menu / order summary must work without network where feasible; scanning requires network for AI extraction (stated honestly in UI).
 - **Language switching:** Changing preferred language re-renders customer views immediately; staff view always preserves original names regardless of UI language.
