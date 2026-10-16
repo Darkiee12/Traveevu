@@ -24,9 +24,9 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 
 | Entity (from prompt §5) | Form | Rationale |
 |---|---|---|
-| `Dish` | **Table** | Canonical identity; aliases/variants point here; discovery + pricing aggregate here |
+| `Dish` | **Table** | Canonical identity; aliases point here; discovery + pricing aggregate here. Variations live on `MenuItem.variantLabel`, not a separate table (ADR 0002) |
 | `DishAlias` | **Table** (or table-backed) | Many spellings/names per dish; needs lookup index + provenance; not a throwaway string |
-| `DishVariant` | **Table** (narrow) | Regional / preparation variants of a dish (e.g., Cơm tấm sườn vs bì vs chả). Only where variants have distinct ingredients/price/identity; otherwise a `MenuItem` variant, not a `DishVariant` |
+| `DishVariant` | **NOT a table in the MVP** (ADR 0002) | No `DishVariant` table. Regional / preparation variants (e.g., Cơm tấm sườn vs bì vs chả) are preserved as `MenuItem.variantLabel` on the menu items that sell them; dish pages group those items by label. A one-off size/portion difference is a `MenuItemOption`, not a variant |
 | `Ingredient` | **Table** (reference) | Shared vocabulary; allergen mapping; reused across dishes |
 | `Allergen` | **Table** (reference, small enum-backed) | Fixed vocabulary (e.g., peanut, shellfish, gluten, egg, dairy…); never free-text in safety-critical paths |
 | `Restaurant` | **Table** | Identity, PostGIS location, attributes, moderation |
@@ -57,7 +57,6 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 
 ```
 Dish 1──* DishAlias
-Dish 1──* DishVariant
 Dish *──* Ingredient          (via DishIngredient: role, evidence_level, optional flag)
 Ingredient *──* Allergen      (via IngredientAllergen; allergen vocabulary is fixed)
 Dish 1──* PriceObservation    (aggregated view; observations also link Restaurant/MenuItem)
@@ -68,6 +67,7 @@ Restaurant 1──* MenuSnapshot (versioned, append-only)
 MenuSnapshot 1──* MenuItem
 MenuItem *──* MenuItemOption (JSONB value inside MenuItem)
 MenuItem *──1 Dish (nullable FK: mapped dish, or NULL = unmapped)
+MenuItem.variantLabel — nullable variant label (e.g. "sườn nướng"); NO DishVariant table in MVP (ADR 0002)
 MenuItem 1──* PriceObservation (listed-price evidence)
 Restaurant 1──* PriceObservation
 Restaurant 1──* Review (restaurant reviews)
@@ -114,10 +114,28 @@ Identity for a food, independent of any restaurant.
 - Indexed for lookup: alias matching is deterministic (normalized, diacritic-aware for Vietnamese) + AI-assisted disambiguation only when deterministic match is ambiguous. See `ai-boundaries.md`.
 - **Invariant:** Aliases never change the canonical name. Merging two dishes re-points aliases, never deletes history.
 
-### 4.3 `DishVariant`
+### 4.3 `DishVariant` — NOT a table in the MVP (ADR 0002, Option A)
 
-- `dishId`, `variantName` (e.g., `sườn nướng`, `bì`, `chả trứng`), `distinguishingIngredients`, `notes`.
-- Only when the variant is a recognized, named variation with distinct identity. A restaurant's one-off size/portion difference is a `MenuItemOption`, not a `DishVariant`.
+There is no `DishVariant` table, no `variantName` / `distinguishingIngredients`
+entity, and no variant threshold to decide in the MVP. Variations are
+preserved where they are observed — on the menu item:
+
+- `MenuItem.variantLabel`: nullable, validated string (e.g., `sườn nướng`,
+  `bì`, `chả trứng`), taken from the menu evidence (original wording),
+  never invented. `null` = no variant stated.
+- Discovery groups by canonical `Dish`. A dish page shows its mapped
+  menu items grouped by `variantLabel` (plus an "no variant stated"
+  group), so variants stay visible without becoming entities.
+- Price stats and dietary reasoning aggregate at the `Dish` level;
+  variant-level stats are a display grouping of `MenuItem` /
+  `PriceObservation` rows, never a separate aggregate entity.
+- A restaurant's one-off size/portion difference is a `MenuItemOption`,
+  not a variant.
+- **Promotion path (only if evidence demands it later):** if variants
+  ever prove they need their own lifecycle (own ingredients, allergens,
+  curation, identity independent of any menu), promote them via a
+  migration that creates the table from `MenuItem.variantLabel`
+  values + a curation pass — recorded in a new ADR. Do not pre-build it.
 
 ### 4.4 `Ingredient` / `Allergen`
 
@@ -169,13 +187,13 @@ first-class, low-friction path — not "append-only means unfixable":
   requires moderator review — it is never auto-published from a
   single user correction. See `data-provenance.md` §4.
 
-- `id`, `restaurantId`, `snapshotVersion` (monotonic per restaurant), `capturedAt` (extraction time), `observedMenuAt` (menu's own date, if visible; nullable), `source` (`scan | contribution | manual`), `imageRef` (private `MediaAsset` id), `extraction` (validated JSONB payload: items, categories, prices, options, uncertainties), `extractionConfidence` (overall + per-item), `status` (`draft | pending_review | published | rejected | superseded`), `supersedesId` (nullable), `createdBy` (user id, private).
+- `id`, `restaurantId`, `snapshotVersion` (monotonic per restaurant), `capturedAt` (extraction time), `observedMenuAt` (menu's own date, if visible; nullable), `source` (`scan | contribution | manual`), `imageRef` (private `MediaAsset` id — scan images are processed privately server-side with temporary storage + retention limits; see `data-provenance.md` §5.2), `extraction` (validated JSONB payload: items, categories, prices, options, uncertainties), `extractionConfidence` (overall + per-item), `status` (`draft | pending_review | published | rejected | superseded`), `supersedesId` (nullable), `createdBy` (user id, private).
 - **Invariant:** Published snapshots are immutable. A correction creates a new snapshot with `supersedesId` → previous. The "current menu" for a restaurant = latest `published` snapshot, resolved deterministically. History is always queryable.
 - **Invariant:** `MenuSnapshot` never contains user preferences, order drafts, or user-specific pricing. It is shared evidence.
 
 ### 4.7 `MenuItem` (restaurant-specific)
 
-- `id`, `snapshotId`, `originalName` (verbatim from menu — preserved), `translatedName` (locale map), `description` (verbatim or extracted; `null` if absent — never invented), `category`, `price` (nullable — missing price stays `null`), `currencyCode`, `sizeVariants` / `options` (see `MenuItemOption`), `dishId` (nullable mapping to canonical `Dish`), `mappingConfidence`, `uncertainties` (array: e.g., `price_unclear`, `ingredients_unknown`), `sortOrder`.
+- `id`, `snapshotId`, `originalName` (verbatim from menu — preserved), `translatedName` (locale map), `description` (verbatim or extracted; `null` if absent — never invented), `category`, `variantLabel` (nullable validated string, e.g. `sườn nướng`, from menu evidence, never invented; `null` = no variant stated — ADR 0002), `price` (nullable — missing price stays `null`), `currencyCode`, `sizeVariants` / `options` (see `MenuItemOption`), `dishId` (nullable mapping to canonical `Dish`), `mappingConfidence`, `uncertainties` (array: e.g., `price_unclear`, `ingredients_unknown`), `sortOrder`.
 - **Invariant:** `originalName` is never overwritten by translation or normalization. Display always shows original alongside translation.
 - **Invariant:** Price `null` ≠ price 0. Missing price is displayed as unknown.
 
@@ -199,6 +217,14 @@ Fields: `id`, `kind`, `dishId` (nullable), `menuItemId` (nullable), `restaurantI
 **Invariants:**
 
 - Listed and receipt-paid observations are never averaged together silently. Aggregations group by kind and disclose the mix.
+- **Manual ≠ receipt (ADR 0003).** A manually entered price
+  (`source: manual`, typed numbers, no backing image) is never a
+  receipt-backed observation (`source: receipt`, receipt photo with
+  legible line items). Manual observations carry a capped
+  confidence and, if published, are labeled "reported price,
+  unverified". Manual and receipt-backed observations are never
+  aggregated or displayed equivalently — moderation, aggregation,
+  and UI must keep the `source` boundary visible.
 - Price stats (median, p25/p75, min/max) are computed deterministically from observations, never by LLM. Display always includes observation count, area, date range, and kind mix. Insufficient evidence → "insufficient evidence", never a fabricated average.
 - Receipt images are private by default (see `data-provenance.md` §5). A receipt-derived observation publishes the *amount*, not the receipt image or PII.
 
@@ -222,9 +248,29 @@ Fields: `id`, `kind`, `dishId` (nullable), `menuItemId` (nullable), `restaurantI
 
 State machine wrapping any user-submitted data (menu scan, correction, price report, review, photo).
 
-- `id`, `userId` (private), `subjectType` (`menu_scan | correction | price_report | review | photo`), `subjectRefs` (explicit FKs), `status`: `draft → submitted → pending_review → published | rejected | needs_more_info`, `moderationNotes` (private), `reviewedBy`, `reviewedAt`, `createdAt`.
+- `id`, `ownerUserId` (private, **nullable FK, `ON DELETE SET NULL`,
+  never `CASCADE`** — ADR 0003), `attribution` (immutable snapshot,
+  validated JSONB: `originalUserId` as a value, not an FK,
+  `isAnonymousAtSubmission`, `displayLabel`, `submittedAt` — never
+  rewritten by a link event; **internal-only**: no public API
+  response or published page may contain a user id, email, or raw
+  internal identifier — public surfaces expose only the
+  `displayLabel`), `subjectType` (`menu_scan | correction | price_report | review | photo`), `subjectRefs` (explicit FKs), `status`: `draft → submitted → pending_review → published | rejected | needs_more_info`, `moderationNotes` (private), `reviewedBy`, `reviewedAt`, `createdAt`.
 - **Transitions:** only forward through moderation; `published` is terminal for that version (a correction creates a new contribution + new snapshot, not a mutation). Rejection records a reason; user can resubmit as a new contribution.
 - **Invariant:** Publishing a contribution never publishes the contributor's profile, preferences, or order history.
+- **Anonymous submissions (ADR 0003):** menu scans, corrections,
+  and price reports may be submitted by anonymous guests (Better
+  Auth anonymous-plugin users, `isAnonymous: true`). They enter
+  `pending_review` and are never auto-published; the MVP keeps
+  manual publication approval. Reviews and persistent contributor
+  profiles require Google sign-in. Scan and submit are separate
+  actions — submitting needs an explicit confirmation before
+  extracted data is shared for moderation. (Scanning itself is NOT
+  local-only: images are processed privately server-side — see
+  `data-provenance.md` §5.2.) Deleting a user (link, prune,
+  account deletion) never deletes contributions: the owner FK
+  becomes `NULL` and the attribution snapshot preserves original
+  provenance.
 
 ### 4.14 `Review`
 
@@ -270,7 +316,7 @@ State machine wrapping any user-submitted data (menu scan, correction, price rep
 | Price | Derived aggregate, never stored as fact | Listed price on that menu (or null) |
 | Multiplicity | One per food | Many per dish, across restaurants and snapshots |
 
-A restaurant may sell multiple variants of one dish → multiple `MenuItem`s mapping to one `Dish` (or to distinct `DishVariant`s). Never create a new `Dish` per menu-item spelling.
+A restaurant may sell multiple variants of one dish → multiple `MenuItem`s mapping to one `Dish`, distinguished by `MenuItem.variantLabel`. Never create a new `Dish` per menu-item spelling, and never create a `DishVariant` row (ADR 0002).
 
 ### 5.2 MenuSnapshot vs Current Menu
 
@@ -330,17 +376,26 @@ AI-extracted information carries confidence + provenance. LLM-generated descript
 12. AIExecution logs contain no PII.
 13. Contributions go through the state machine; publishing never leaks private data.
 14. Every shared fact carries provenance (source, time, confidence, status) or is explicitly `unknown`.
+15. No `DishVariant` table in the MVP; variations live on `MenuItem.variantLabel` (ADR 0002).
 
 ## 7. Open questions
 
 1. **ID strategy** — UUID vs human-readable slug for Dish/Restaurant: decide once in M0; slugs help SEO but need uniqueness + rename policy.
 2. **Money representation** — RESOLVED 2026-10-16: integer minor units end to end (Postgres `BIGINT amount_minor` + currency, Effect Schema `Money`, JSON `{ amountMinor, currency }`, integer-only frontend arithmetic). See `docs/development/typescript.md` § Money boundary. No `numeric`, no float, no `BigInt` on the wire.
-3. **DishVariant threshold** — when does a variant deserve its own row vs a MenuItem option? Draft rule in §4.3; validate against real HCMC menus in M1.
+3. **DishVariant threshold** — RESOLVED 2026-10-17 (ADR 0002,
+   Option A): no `DishVariant` table in the MVP, no threshold to
+   decide. Variations are `MenuItem.variantLabel`; discovery groups
+   by canonical `Dish`. Promotion to a table later requires a new ADR
+   + migration from observed labels.
 4. **Auth model for UserPreference/OrderDraft** — RESOLVED 2026-10-16
-   (ADR 0001): Better Auth owns identity (`user` / `session` /
-   `account` / `verification` tables). Guests are anonymous-plugin
-   users (real rows, `isAnonymous: true`), so `UserPreference` /
-   `FavoriteDish` / `OrderDraft` / `Contribution` FK to
-   `user.id` with `NOT NULL` owners; sign-in claims guest rows via
-   `onLinkAccount`. See `docs/auth.md` §6.
+   (ADR 0001), amended 2026-10-17 (ADR 0003): Better Auth owns
+   identity (`user` / `session` / `account` / `verification`
+   tables). Guests are anonymous-plugin users (real rows,
+   `isAnonymous: true`), so `UserPreference` / `FavoriteDish` /
+   `OrderDraft` FK to `user.id` with `NOT NULL` owners; sign-in
+   claims guest rows via `onLinkAccount`. Exception (ADR 0003):
+   `Contribution.ownerUserId` is **nullable** (`ON DELETE SET NULL`,
+   never `CASCADE`) + an immutable attribution snapshot, so
+   contributions survive anonymous-user deletion on linking/prune
+   with original provenance intact. See `docs/auth.md` §6.
 5. **Moderation capacity** — who reviews contributions in the demo? Define a minimal moderation path in M2 (at least: approve/reject + reason).

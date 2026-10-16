@@ -121,7 +121,7 @@ In Effect 4.0.0, packages are consolidated into a single `effect` package; all `
 
 | Domain | Owns |
 |---|---|
-| Catalog | Dish, DishAlias, DishVariant, Ingredient, Allergen, dish matching |
+| Catalog | Dish, DishAlias, Ingredient, Allergen, dish matching (variants live on `MenuItem.variantLabel`, no `DishVariant` table — ADR 0002) |
 | Restaurants | Restaurant identity, location (PostGIS), attributes |
 | Discovery | Search intent → ranked dishes/restaurants (deterministic ranking) |
 | Personalization | UserPreference, FavoriteDish, recommendation inputs (explicit > demographic) |
@@ -162,7 +162,7 @@ See `ai-boundaries.md` for the full contract. Summary:
 ### 2.6 Storage — S3-compatible
 
 - **R2-compatible abstraction** (S3 API). Two logical buckets: **public** (display assets via stable resource IDs) and **private** (raw receipts, original menu images pending moderation, any PII-bearing evidence).
-- Raw receipts: private by default, never publicly accessible. Menu images: private until published; published display assets served via public bucket + CDN/cache invalidation.
+- Raw receipts: private by default, never publicly accessible. Menu images: private until published; published display assets served via public bucket + CDN/cache invalidation. Scan images are processed privately server-side (backend + AI provider) — processing is not publication; unsubmitted scan images live in temporary storage with a retention limit and are deleted if not submitted (see `data-provenance.md` §5.2).
 - Stable resource identifiers: changing an image never requires frontend redeploy; metadata + mappings in Postgres, bytes in object storage (see §6).
 
 ### 2.7 Maps & search
