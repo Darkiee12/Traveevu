@@ -1,9 +1,34 @@
 # ADR 0001 — Better Auth + Google, guest-first, no auto-admin
 
 > Status: **Accepted** 2026-10-16 (PLANNING — no code).
+> **Amended** 2026-10-17 by ADR 0003 (see "Amendments" below):
+> anonymous evidence contributions (menu scans, corrections,
+> price reports) may be *submitted* without sign-in; publication
+> stays manually moderated; reviews + persistent contributor
+> profiles still require Google sign-in.
 > Decides: auth provider, guest model, admin authorization.
 > Resolves blocking question **Q1** (customer identity) and the M0
 > "auth selection" item. Full design: `docs/auth.md`.
+
+## Amendments
+
+- **ADR 0003 (2026-10-17) — anonymous evidence contributions.**
+  Supersedes the "sign-in at save/contribute moments" rule for
+  *submitting* verifiable evidence: guests may submit menu scans,
+  corrections, and price reports without an account; everything
+  anonymous enters `pending_review` and is never auto-published.
+  Scan and submit are separate actions (scanning is NOT local-only:
+  images are processed privately server-side; see ADR 0003 §1);
+  submitting requires an explicit confirmation before extracted
+  data is shared for moderation.
+  `Contribution.ownerUserId` is nullable (`ON DELETE SET NULL`,
+  never `CASCADE`) + an immutable attribution snapshot preserves
+  original provenance across anonymous-user deletion on linking.
+  Reviews and persistent contributor profiles still require Google
+  sign-in. Manual prices are never receipt-backed. MVP keeps manual
+  publication approval; trust scoring / auto-moderation are future
+  work, not hackathon dependencies. See
+  `docs/decisions/0003-anonymous-contributions.md`.
 
 ## Context
 
@@ -37,7 +62,10 @@ admin studio must never grant privilege from a consumer login.
 - Google is the only initial OAuth/OIDC provider. No email/password,
   no second provider in the MVP.
 - Guest-first: browsing, scanning, and order drafts need no sign-in.
-  Sign-in is offered at save/contribute moments only.
+  Sign-in is offered at save moments and for reviews / persistent
+  contributor profiles. Submitting verifiable evidence (menu scans,
+  corrections, price reports) does not require sign-in — amended
+  by ADR 0003, which moves the gate from submission to publication.
 - Guest identity = Better Auth anonymous users (lazy minting);
   sign-in claims guest rows via `onLinkAccount` in one idempotent
   transaction (preferences, favorites, drafts, draft contributions).

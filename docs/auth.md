@@ -140,17 +140,67 @@ anonymous plugin). Rules:
   menu, select items, and show the bilingual order to staff.
 - Hold an **in-progress order draft** on the device (in-memory /
   local state). Nothing about the demo requires an account.
+- **Submit verifiable evidence for moderation** — menu scans,
+  corrections, price reports (ADR 0003). See §6.2.
 
-### 6.2 What requires sign-in
+### 6.1a Scan and submit are separate actions (ADR 0003, corrected 2026-10-17)
 
-- **Saving** preferences, favorites, order history (persistence
-  across devices/sessions).
-- **Contributing persistent community content**: publishing a menu,
-  submitting a correction, review, or price report.
-- The UI offers "Sign in with Google to save / contribute" **at the
-  moment the user tries to persist something** — never as a gate in
-  front of scanning or ordering. Confirming a scan locally is free;
-  *publishing* the contribution requires sign-in.
+- **Scanning requires no account and never auto-creates a public
+  contribution.** The scan → extraction → interactive menu →
+  bilingual order flow works with no authentication and no anonymous
+  identity. Scanning alone never mints a Better Auth anonymous user
+  and never creates a contribution.
+- **Scanning is NOT local-only.** Extraction is server-side AI, so
+  the menu image is sent to our backend and to the AI provider for
+  **private processing** — processing is not publication. The image
+  is stored as a private `MediaAsset`, visible only to the
+  extraction pipeline (and, if submitted, to moderators); it is held
+  in temporary storage with a retention limit — unsubmitted scan
+  images are deleted after a short window (default proposal: 24h
+  after capture or when the draft is abandoned, whichever is first;
+  exact window confirmed in M0; deletion is recorded); and the UI
+  discloses before scanning that the photo goes to our backend +
+  AI provider for extraction, is not published, and is deleted if
+  not submitted. See `data-provenance.md` §5.2.
+- **The customer gets an interactive menu without publishing.**
+  Confirming the extraction lets the traveler order; it does not
+  share or publish anything.
+- **Contributing is a separate, explicit action.** Only when the
+  traveler taps "Share this menu with Traveevu" (or equivalent)
+  does the app create/use a Better Auth anonymous identity — and
+  only because persistent guest ownership of the contribution
+  requires one.
+- **Confirmation before sharing.** Before extracted data is shared
+  for moderation, the UI asks for confirmation and states what
+  happens: the extracted menu goes into a moderation queue, is
+  reviewed by a human before anything publishes, and needs no
+  account. Declining keeps the scan-to-order flow untouched and the
+  unsubmitted image is deleted per the retention rule above.
+- **The shared menu never contains private data.** A published
+  `MenuSnapshot` / contribution carries menu/price/review evidence
+  only — never `UserPreference`, `FavoriteDish`, or `OrderDraft`
+  fields.
+
+### 6.2 What requires sign-in — and what does not (amended by ADR 0003)
+
+The gate for contributions moved from *submission* to *publication*
+for verifiable evidence. Nothing anonymous is ever auto-published.
+
+| Action | Needs sign-in? | Publication |
+|---|---|---|
+| Save preferences / favorites / order history | **Yes** — Google sign-in | Private to the account |
+| Submit a menu scan | No (anonymous guest) | `pending_review` → manual moderator approval |
+| Submit a correction | No (anonymous guest) | `pending_review` → manual moderator approval; allergen corrections always need moderator review |
+| Submit a price report | No (anonymous guest) | `pending_review` → manual moderator approval; manual prices are never receipt-backed (ADR 0003 §3) |
+| Submit a review | **Yes** — Google sign-in | Moderated; opinions, never dietary/price evidence |
+| Persistent contributor profile (public history, attribution page) | **Yes** — Google sign-in | N/A |
+
+- The UI offers "Sign in with Google to save" **at the moment the
+  user tries to persist something private**, and "Sign in with
+  Google to review" for reviews — never as a gate in front of
+  scanning, ordering, or submitting evidence.
+- Public attribution for anonymous submissions is pseudonymous
+  ("submitted by a traveler") — no profile link, no PII.
 
 ### 6.3 Guest identity: Better Auth anonymous users (not device UUIDs)
 
@@ -173,8 +223,9 @@ Rules:
   callback re-parents the guest's rows to the real account in **one
   transaction**: `UserPreference`, `FavoriteDish`, `OrderDraft`
   (including the in-progress draft — the user does not lose their
-  current menu or order), and `Contribution` rows in `draft`
-  status. Then the anonymous user is deleted by the plugin.
+  current menu or order), and `Contribution` rows in `draft` and
+  `pending_review` status. Then the anonymous user is deleted by
+  the plugin.
 - **Claim is idempotent and must not throw away the draft.** If the
   claim transaction fails, the link must not silently discard the
   guest's data: the claim is retried / the failure is logged and
@@ -183,15 +234,49 @@ Rules:
   The M0 PoC verifies exactly what Better Auth does when
   `onLinkAccount` throws (does the link abort? does the anonymous
   user survive?) and the claim is written to match that behavior.
+  The PoC now also verifies that a throw leaves contributions
+  intact: no partial re-parent, no orphaned FK.
+- **Contributions survive anonymous-user deletion (ADR 0003).**
+  `Contribution.ownerUserId` is a **nullable FK, `ON DELETE SET
+  NULL`, never `CASCADE`** — deleting a user (link, prune, or
+  account deletion) never deletes contributions. Every
+  `Contribution` carries an **immutable attribution snapshot**
+  (validated JSONB: `originalUserId` as a value, not an FK,
+  `isAnonymousAtSubmission`, `displayLabel`, `submittedAt`) that
+  preserves original provenance and is never rewritten by a link
+  event. On link, `draft`/`pending_review` contributions re-parent
+  to the real account for FK integrity; the attribution snapshot
+  stays original. Published contributions keep their original
+  attribution display. On prune (anonymous user deleted without
+  linking), the owner FK becomes `NULL` and the contribution stays
+  in its queue/state with its snapshot intact, still labeled guest.
+  **The attribution snapshot is internal-only** — no public API
+  response, published page, or shared payload may contain a user
+  id, email, or any raw internal identifier. Public surfaces expose
+  only the `displayLabel` ("submitted by a traveler" for anonymous
+  submissions, or the contributor's chosen public display label
+  for signed-in submissions). Re-parenting changes the internal
+  owner FK, never the public label.
 - **Published contributions are NOT re-parented silently.**
   A `Contribution` that is already `published` keeps its original
-  attribution record; the claim moves `draft` contributions and
-  private data (preferences, favorites, drafts). Published history
-  is evidence — it is never rewritten by a link event.
+  attribution record; the claim moves `draft`/`pending_review`
+  contributions and private data (preferences, favorites, drafts).
+  Published history is evidence — it is never rewritten by a link
+  event.
 - **Abuse guards.** Anonymous sign-in is rate-limited per IP
   (Better Auth rate limiting) and anonymous users with no owned rows
   are pruned by a scheduled job after a retention window. Clearing
   cookies orphans an anonymous identity — acceptable: the guest
+  simply starts fresh; nothing shared depends on the orphaned
+  identity.
+- **Guest IDs alone are not abuse prevention (ADR 0003).**
+  Clearing cookies mints a fresh anonymous identity, so a ban or
+  rate limit keyed only on guest id is trivially evaded. Abuse
+  controls must be layered: per-IP rate limits on anonymous
+  submissions, per-submission validation (schema, size, duplicate
+  detection), and the moderation queue as the hard gate — nothing
+  anonymous publishes without a human. Guest-id bans are at most a
+  convenience, never the mechanism.
   simply starts a fresh guest session; nothing they published is
   lost (published data is attributed in history, not to the live
   anon row).
@@ -319,6 +404,14 @@ AuthenticatedIdentity {
 
 - **Q1 (blocking questions) — RESOLVED:** guest-first, optional
   Google account. See `docs/decisions/0001-better-auth-google.md`.
+- **Contribution attribution (ADR 0003, amends this decision):**
+  anonymous guests may *submit* menu scans, corrections, and price
+  reports for moderation; publication stays manually moderated;
+  reviews + persistent contributor profiles still require Google
+  sign-in. Scan and submit are separate actions; submitting needs
+  an explicit confirmation. `Contribution.ownerUserId` is nullable
+  (`ON DELETE SET NULL`) + immutable attribution snapshot. See
+  `docs/decisions/0003-anonymous-contributions.md`.
 - **`UserPreference` / `FavoriteDish` / `OrderDraft` /
   `Contribution`:** owner is a Better Auth `user.id` (anonymous or
   real). The old "anonymous session/device id" design is replaced
@@ -328,8 +421,10 @@ AuthenticatedIdentity {
   custom auth work in any milestone.
 - **Admin design:** §9 auth section now reads: Better Auth session +
   `RequireAdmin` middleware + audited explicit grants; no auto-admin.
-- **User journeys:** sign-in appears only at save/contribute
-  moments; the P1 demo flow has no sign-in step.
+- **User journeys:** sign-in appears only at save moments and for
+  reviews / persistent contributor profiles (ADR 0003: submitting
+  evidence does not require sign-in); the P1 demo flow has no
+  sign-in step.
 - **No changes to:** money, snapshot immutability, template/renderer
   boundary, menu extraction contracts, pricing rules.
 
@@ -347,6 +442,13 @@ AuthenticatedIdentity {
    cross-origin fallback in §7.
 5. **Google OAuth consent screen** — unverified-app warning in the
    demo unless verified; arrange test users / internal app early.
+6. **Anonymous-submission abuse controls (ADR 0003)** — per-IP rate
+   limits on anonymous submissions, duplicate detection, and queue
+   capacity; thresholds decided in M0/M2. Guest-id bans alone are
+   not the mechanism.
+7. **Submit-confirmation UX (ADR 0003)** — exact copy for the
+   "Share this menu" confirmation (what is shared, moderation,
+   no account needed); designed in M2 with the contribution flow.
 6. **Anonymous-user pruning** — retention window + scheduled job;
    define in M0 (default: prune anon users with no owned rows after
    30 days; never prune anon users owning published contributions
