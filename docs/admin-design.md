@@ -192,7 +192,7 @@ Developer-oriented investigation of AI behavior. **Entry:** Sidebar → AI Inspe
 
 ### 4.6 Contribution / Moderation Queue (cross-cutting)
 
-Contributions (menus, price observations, reviews, corrections, photos) share one moderation surface, filtered by type. Queue shows: type, submitter (pseudonymous ID, not PII), restaurant/dish, submitted time, evidence (image thumbnail / extracted data), status. Actions: approve / reject (+ reason) / request-more-info. Bulk approve only for explicitly low-risk types per policy (default: none). Every decision audited; submitter sees status.
+Contributions (menus, price observations, reviews, corrections, photos) share one moderation surface, filtered by type. Queue shows: type, submitter display label ("submitted by a traveler" for anonymous submissions — never a user id, email, or raw internal identifier on any public surface; moderators may see the internal attribution snapshot for audit/abuse investigation, never PII), restaurant/dish, submitted time, evidence (image thumbnail / extracted data), status. Actions: approve / reject (+ reason) / request-more-info. Bulk approve only for explicitly low-risk types per policy (default: none). Every decision audited; submitter sees status. Anonymous submissions are never auto-published (ADR 0003).
 
 ### 4.7 Appearance Configuration
 

@@ -98,9 +98,31 @@ Dietary claims are safety-critical. The model below is mandatory, not advisory.
 
 ### 5.2 Menu photos & user contributions
 
+- **Scan images are processed privately, not published.** Extraction
+  is server-side AI, so a menu photo is sent to our backend and to
+  the AI provider for private processing — processing is not
+  publication. The image is stored as a private `MediaAsset`,
+  visible only to the extraction pipeline (and, if submitted, to
+  moderators), with access audited.
+- **Temporary storage + retention limit.** An unsubmitted scan
+  image is held only until the traveler decides: if they do not
+  submit it, it is deleted after a short window (default proposal:
+  24h after capture or when the draft is abandoned, whichever is
+  first; exact window confirmed in M0; deletion is recorded). A
+  submitted image is retained per the retention policy (§9 Q1)
+  until the contributor deletes it or the window passes.
+- **Privacy disclosure.** The UI discloses before scanning that the
+  photo goes to our backend + AI provider for extraction, is not
+  published, and is deleted if not submitted. The scan flow never
+  implies the photo stays on the device.
 - Menu photos: private until published. Published display uses the derived structured menu, not necessarily the raw photo. If a raw photo is ever displayed publicly, it needs explicit moderation + a check for incidental PII (people, license plates, etc. in the background).
 - User-generated content (menu photos, food photos, receipts, price observations, reviews, corrections) requires moderation + provenance. See §6.
 - **Do not publish the user's private profile or ordering preferences** as part of shared menu data. Publishing a contribution publishes the *menu/price/review evidence*, never `UserPreference`, `FavoriteDish`, or `OrderDraft`.
+- **Invariant:** the shared/published menu (`MenuSnapshot` /
+  contribution payload) must never contain private user
+  preferences or order details. Extraction and publication
+  pipelines carry only menu evidence; preference/order fields are
+  never an input to them.
 - Users can request correction/removal of their contributions. Removal marks the contribution `removed` + supersedes dependent snapshots where needed; it does not rewrite history — the removal itself is recorded.
 
 ### 5.3 PII minimization
@@ -128,14 +150,27 @@ draft → submitted → pending_review → published | rejected | needs_more_inf
 
 Transitions are forward-only through moderation. There is no silent auto-publish for safety-relevant claims. (A future fast-path — e.g., high-confidence re-scan matching the existing menu — may auto-confirm *menu sameness*, but it must not auto-publish new dietary or price claims. Decide in M2; default is human review.)
 
+**Anonymous submissions (ADR 0003):** menu scans, corrections, and
+price reports may be submitted by anonymous guests (Better Auth
+anonymous-plugin users). They enter at `submitted` → `pending_review`
+and are **never auto-published** — the MVP keeps manual publication
+approval for every anonymous submission. Trust scoring, reputation,
+and automated moderation are future improvements, explicitly not
+hackathon dependencies; they need their own ADR if ever introduced.
+
 ### 6.2 Menu / price / review publication
 
-| Data | Published when |
-|---|---|
-| Menu snapshot | Contribution approved by moderator (or eligible fast-path, if defined) |
-| Price observation | Moderated + deduplicated; receipt-paid observations need legible line items |
-| Review | Moderated (spam/abuse/PII check); reviews are opinions, never dietary/price evidence |
-| Dish (canonical) | Curated or moderator-approved; AI-proposed dishes stay `draft` until reviewed |
+| Data | Published when | Evidence quality / verification (ADR 0003) |
+|---|---|---|
+| Menu snapshot | Contribution approved by moderator (or eligible fast-path, if defined) | Menu scan: photo-backed + extraction payload; moderator checks extraction against the photo. Highest of the anonymous evidence classes — re-verifiable. |
+| Price observation | Moderated + deduplicated; receipt-paid observations need legible line items | Receipt-backed (`source: receipt`): photo with legible line items. Manual (`source: manual`): typed, unverified — never receipt-backed, confidence capped, published only as "reported price, unverified". Manual and receipt-backed are never aggregated or displayed equivalently. |
+| Review | Moderated (spam/abuse/PII check); reviews are opinions, never dietary/price evidence | Signed-in only (ADR 0003). |
+| Dish (canonical) | Curated or moderator-approved; AI-proposed dishes stay `draft` until reviewed | — |
+
+**Corrections** (field-level change list against a published
+snapshot) are verified as diff + reason against prior evidence;
+allergen corrections always need moderator review. Corrections go
+through the same contribution/moderation path as new submissions.
 
 ### 6.3 Audit trails
 
@@ -150,7 +185,7 @@ Transitions are forward-only through moderation. There is no silent auto-publish
 - **Field-level provenance (review amendment 2026-10-16):** each field carries `evidenceLevel: ai_extracted | user_confirmed | restaurant_confirmed` + `sourceRef` + `confirmedBy/at` where applicable. The original extraction is preserved verbatim; a correction is a `Contribution(type: correction)` with an explicit field-level change list (`field, oldValue, newValue, reason, actor, at`) that produces a new snapshot version. The confirm screen promotes only fields the user actually reviewed. Safety-relevant corrections (adding/removing an allergen) require moderator review — never auto-published from one user correction.
 - Corrections go through the same contribution/moderation path as new submissions.
 - If a correction invalidates a previously published claim (e.g., a price was wrong), the corrected version supersedes it, and the UI reflects the correction. The history shows both versions + the reason.
-- Malicious / spam corrections are handled by moderation + rejection reasons; repeated abuse may restrict contribution privileges (decide enforcement in M0 auth/moderation design).
+- Malicious / spam corrections are handled by moderation + rejection reasons; repeated abuse may restrict contribution privileges (decide enforcement in M0 auth/moderation design). Guest IDs alone are not abuse prevention (ADR 0003) — clearing cookies mints a fresh anonymous identity, so controls must include per-IP rate limits, per-submission validation, and the moderation queue as the hard gate.
 
 ## 8. Seed & demo data provenance
 
@@ -165,3 +200,4 @@ Transitions are forward-only through moderation. There is no silent auto-publish
 2. **Fast-path auto-confirmation** — define narrow criteria (if any) for auto-confirming a re-scan that exactly matches the published menu. Default: human review. Decide in M2.
 3. **Allergen vocabulary governance** — who maintains the fixed allergen list, and how are new allergens added? Decide in M0 (curated list, versioned, in `packages/contracts`).
 4. **Profile deletion vs shared evidence** — exact de-identification rules when a user deletes their account. Decide in M0 with privacy review.
+5. **Anonymous-submission abuse controls (ADR 0003)** — per-IP rate-limit thresholds, duplicate detection, queue capacity for guest-owned items. Decide in M0/M2; guest-id bans alone are not the mechanism.
