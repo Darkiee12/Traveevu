@@ -66,9 +66,33 @@ Dietary claims are safety-critical. The model below is mandatory, not advisory.
 | `common` | Common recipe knowledge for this dish in general | Culinary knowledge, AI suggestion labeled as such |
 | `unknown` | No evidence about this ingredient / preparation | Absence of information |
 
+### 4.1a Allergen status — four-state, separate axis (ADR 0004)
+
+Ingredient evidence (§4.1) and allergen status are **distinct axes**.
+Ingredients and allergen statuses are validated values on `Dish`
+(typical recipe) and, where evidenced, on `MenuItem` (this serving)
+— no `Ingredient` / `Allergen` / `DishIngredient` /
+`IngredientAllergen` tables in the MVP.
+
+| Status | Meaning | Established by |
+|---|---|---|
+| `present` | Allergen is in the dish/serving | Menu text, restaurant statement, moderator-verified evidence |
+| `possibly_present` | Allergen may be present, incl. cross-contact risk / uncertain preparation | Uncertain evidence, cross-contact concern, AI suggestion at most |
+| `confirmed_absent` | Allergen is confirmed not present | Restaurant confirmation (or moderator-verified evidence) **only** — never AI inference, never absence of mention |
+| `unknown` | No information | Absence of information; an allergen with no entry is `unknown` |
+
+- An ingredient with evidence `common` supports at most
+  `possibly_present` for its allergen, never `present`.
+- Cross-contact risk is `possibly_present` + an uncertainty entry
+  (e.g. `cross_contact_unknown`), never collapsed into
+  absent/unknown.
+- The allergen vocabulary is one centralized `AllergenCode` enum
+  in `packages/contracts` (Effect Schema). No arbitrary allergen
+  strings anywhere; adding a code is a contract change.
+
 ### 4.2 Display rules
 
-- **Never claim safe from absence.** "The model did not identify peanut" ≠ "peanut-free". A dish is shown as compatible with an allergy only if its `confirmed`/`known` ingredients pass the constraint **and** preparation is not `unknown` in a way that could hide the allergen.
+- **Never claim safe from absence.** "The model did not identify peanut" ≠ "peanut-free". For a **strict allergen exclusion**, a "safe" verdict requires `confirmed_absent` for that allergen at the applicable level (`MenuItem`-level if present, else Dish-level typical) **and** no `possibly_present` / `unknown` blocking the claim. Anything else → "cannot confirm safe": show the warning, suggest asking staff. Dish-level values describe the typical recipe, not guaranteed preparation — the UI surfaces that distinction.
 - When preparation is `unknown`, the UI says so explicitly: "Preparation unknown — ask staff whether this contains peanuts." No green checkmark, no "safe" label.
 - `common` ingredients are shown as "commonly contains X" — visually distinct from `known`/`confirmed`. The user can see the difference at a glance.
 - AI-suggested ingredients are always `common` until evidenced otherwise. AI suggestions never auto-promote to `known`.
@@ -83,7 +107,7 @@ Dietary claims are safety-critical. The model below is mandatory, not advisory.
 | Moderator-curated dish data with cited source | `known` for the canonical dish (not for a specific restaurant's preparation) |
 | AI extraction from menu image | `observed` — the menu said it; still `known` only if the menu text itself states the ingredient |
 | AI-generated description ("this dish usually has…") | `common` at best — never `known`/`confirmed` |
-| Review text mentioning an ingredient | Not evidence for dietary safety. Reviews are opinions. |
+| Review text mentioning an ingredient (when Review ships; deferred from MVP) | Not evidence for dietary safety. Reviews are opinions. |
 | Absence in any of the above | `unknown` — nothing else |
 
 ## 5. Privacy — receipts, images, and personal data
@@ -116,8 +140,8 @@ Dietary claims are safety-critical. The model below is mandatory, not advisory.
   published, and is deleted if not submitted. The scan flow never
   implies the photo stays on the device.
 - Menu photos: private until published. Published display uses the derived structured menu, not necessarily the raw photo. If a raw photo is ever displayed publicly, it needs explicit moderation + a check for incidental PII (people, license plates, etc. in the background).
-- User-generated content (menu photos, food photos, receipts, price observations, reviews, corrections) requires moderation + provenance. See §6.
-- **Do not publish the user's private profile or ordering preferences** as part of shared menu data. Publishing a contribution publishes the *menu/price/review evidence*, never `UserPreference`, `FavoriteDish`, or `OrderDraft`.
+- User-generated content (menu photos, food photos, receipts, price observations, corrections — reviews when Review ships; deferred from MVP) requires moderation + provenance. See §6.
+- **Do not publish the user's private profile or ordering preferences** as part of shared menu data. Publishing a contribution publishes the *menu/price evidence* (review evidence when Review ships; deferred), never `UserPreference`, `FavoriteDish`, or `OrderDraft`.
 - **Invariant:** the shared/published menu (`MenuSnapshot` /
   contribution payload) must never contain private user
   preferences or order details. Extraction and publication
@@ -164,7 +188,7 @@ hackathon dependencies; they need their own ADR if ever introduced.
 |---|---|---|
 | Menu snapshot | Contribution approved by moderator (or eligible fast-path, if defined) | Menu scan: photo-backed + extraction payload; moderator checks extraction against the photo. Highest of the anonymous evidence classes — re-verifiable. |
 | Price observation | Moderated + deduplicated; receipt-paid observations need legible line items | Receipt-backed (`source: receipt`): photo with legible line items. Manual (`source: manual`): typed, unverified — never receipt-backed, confidence capped, published only as "reported price, unverified". Manual and receipt-backed are never aggregated or displayed equivalently. |
-| Review | Moderated (spam/abuse/PII check); reviews are opinions, never dietary/price evidence | Signed-in only (ADR 0003). |
+| Review | **DEFERRED from the MVP** (future independent entity — `domain-model.md` §4.14). When implemented: moderated (spam/abuse/PII check); reviews are opinions, never dietary/price evidence | Signed-in only when implemented (ADR 0003). |
 | Dish (canonical) | Curated or moderator-approved; AI-proposed dishes stay `draft` until reviewed | — |
 
 **Corrections** (field-level change list against a published
@@ -198,6 +222,10 @@ through the same contribution/moderation path as new submissions.
 
 1. **Retention policy** — how long are private raw images (menu photos, receipts) kept after their derived observations publish? Decide in M0; default proposal: keep until the contributor deletes them or a defined retention window passes, with deletion recorded.
 2. **Fast-path auto-confirmation** — define narrow criteria (if any) for auto-confirming a re-scan that exactly matches the published menu. Default: human review. Decide in M2.
-3. **Allergen vocabulary governance** — who maintains the fixed allergen list, and how are new allergens added? Decide in M0 (curated list, versioned, in `packages/contracts`).
+3. **Allergen vocabulary governance** — RESOLVED 2026-10-17
+   (ADR 0004): one centralized `AllergenCode` enum in
+   `packages/contracts` (Effect Schema). Adding a code is a
+   contract change: versioned, reviewed, released with the
+   contracts package. No `Allergen` table in the MVP.
 4. **Profile deletion vs shared evidence** — exact de-identification rules when a user deletes their account. Decide in M0 with privacy review.
 5. **Anonymous-submission abuse controls (ADR 0003)** — per-IP rate-limit thresholds, duplicate detection, queue capacity for guest-owned items. Decide in M0/M2; guest-id bans alone are not the mechanism.

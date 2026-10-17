@@ -27,8 +27,8 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 | `Dish` | **Table** | Canonical identity; aliases point here; discovery + pricing aggregate here. Variations live on `MenuItem.variantLabel`, not a separate table (ADR 0002) |
 | `DishAlias` | **Table** (or table-backed) | Many spellings/names per dish; needs lookup index + provenance; not a throwaway string |
 | `DishVariant` | **NOT a table in the MVP** (ADR 0002) | No `DishVariant` table. Regional / preparation variants (e.g., Cơm tấm sườn vs bì vs chả) are preserved as `MenuItem.variantLabel` on the menu items that sell them; dish pages group those items by label. A one-off size/portion difference is a `MenuItemOption`, not a variant |
-| `Ingredient` | **Table** (reference) | Shared vocabulary; allergen mapping; reused across dishes |
-| `Allergen` | **Table** (reference, small enum-backed) | Fixed vocabulary (e.g., peanut, shellfish, gluten, egg, dairy…); never free-text in safety-critical paths |
+| `Ingredient` | **Value (JSONB inside `Dish`, validated)** | No `Ingredient` table in MVP (ADR 0004). `Dish.ingredients[]`: `{ name, normalizedId?, role, evidenceLevel, sourceRef? }`. `MenuItem` may carry its own evidence-backed `ingredients[]` |
+| `Allergen` | **Value (Effect Schema enum + per-dish status array)** | No `Allergen` table in MVP (ADR 0004). One centralized `AllergenCode` enum in `packages/contracts`; `Dish.allergenStatuses[]`: `{ allergen, status: present \| possibly_present \| confirmed_absent \| unknown, evidence?, sourceRef? }`. Never free-text in safety-critical paths |
 | `Restaurant` | **Table** | Identity, PostGIS location, attributes, moderation |
 | `MenuSnapshot` | **Table** | Versioned observation; one row per scan/version; immutable once stored (corrections = new row) |
 | `MenuItem` | **Table** (child of snapshot) | Restaurant-specific item within a snapshot; maps to `Dish` optionally (`dishId` nullable — unmapped stays unmapped, never forced) |
@@ -37,8 +37,8 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 | `UserPreference` | **Table** (user-scoped, private) | Profile: language, dietary, allergies, spice, budget, adventurousness. Editable, skippable |
 | `FavoriteDish` | **Table** (join: user ↔ dish) | Up to 5 favorites in onboarding; searchable beyond suggestions; explicit > demographic |
 | `MediaAsset` | **Table** (metadata) + object storage (bytes) | Stable resource ID; metadata in Postgres, bytes in R2; public/private flag |
-| `Contribution` | **Table** (state machine) | Wraps a scan / correction / review / price report; tracks moderation + publication |
-| `Review` | **Table** | Dish or restaurant review; provenance + moderation; distinct from price/menu evidence |
+| `Contribution` | **Table** (state machine) | Wraps a scan / correction / price report / photo; tracks moderation + publication. (`review` joins as a subject type only when Review ships — deferred, see `Review`) |
+| `Review` | **DEFERRED — future independent entity, NO table in MVP** | Dish or restaurant review; provenance + moderation; distinct from price/menu evidence. NOT a value object, NOT a JSONB array on `Dish`/`Restaurant`. Do not build the table during the initial scan-to-order MVP. See §4.14 |
 | `MenuTemplate` | **Table** | Template identity + metadata |
 | `MenuTemplateVersion` | **Table** (JSONB payload, immutable) | Versioned template config; published versions immutable |
 | `MenuPresentation` | **Derived / cacheable, NOT a primary table** | Built from (snapshot + template) via validated transform; may be cached with versioned key; never the source of truth |
@@ -57,10 +57,11 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 
 ```
 Dish 1──* DishAlias
-Dish *──* Ingredient          (via DishIngredient: role, evidence_level, optional flag)
-Ingredient *──* Allergen      (via IngredientAllergen; allergen vocabulary is fixed)
+Dish contains ingredients[]   (validated values, ADR 0004 — NO DishIngredient table)
+Dish contains allergenStatuses[] (validated values, ADR 0004 — NO Allergen / IngredientAllergen tables)
+MenuItem contains ingredients[] / allergenStatuses[] (optional, evidence-backed, ADR 0004)
 Dish 1──* PriceObservation    (aggregated view; observations also link Restaurant/MenuItem)
-Dish 1──* Review (dish reviews)
+Dish 1──* Review (dish reviews — DEFERRED, future entity, no table in MVP; see §4.14)
 Dish 1──* FavoriteDish *──1 User (via UserPreference owner)
 
 Restaurant 1──* MenuSnapshot (versioned, append-only)
@@ -70,7 +71,7 @@ MenuItem *──1 Dish (nullable FK: mapped dish, or NULL = unmapped)
 MenuItem.variantLabel — nullable variant label (e.g. "sườn nướng"); NO DishVariant table in MVP (ADR 0002)
 MenuItem 1──* PriceObservation (listed-price evidence)
 Restaurant 1──* PriceObservation
-Restaurant 1──* Review (restaurant reviews)
+Restaurant 1──* Review (restaurant reviews — DEFERRED, future entity, no table in MVP; see §4.14)
 
 User 1──1 UserPreference
 User 1──* FavoriteDish
@@ -78,14 +79,14 @@ User 1──* OrderDraft
 OrderDraft 1──* OrderDraftLine (value/child: snapshot item ref + options + qty + note)
 OrderDraft ──> MenuSnapshot (references a specific snapshotVersion; never floats)
 
-Contribution 1──1 <subject>   (polymorphic by type: menu_scan | correction | price_report | review | photo)
-Contribution ──> MenuSnapshot / PriceObservation / Review / MediaAsset (as applicable)
+Contribution 1──1 <subject>   (polymorphic by type: menu_scan | correction | price_report | photo; `review` joins only when Review ships — deferred)
+Contribution ──> MenuSnapshot / PriceObservation / MediaAsset (as applicable; `Review` target when Review ships — deferred)
 
 MenuTemplate 1──* MenuTemplateVersion
 PromptDefinition 1──* PromptVersion
 AIExecution ──> PromptVersion (nullable for non-prompt calls) + Contribution/MenuSnapshot refs
 
-MediaAsset 1──* <referenced by Dish / Restaurant / MenuSnapshot / Review> (by stable resource ID)
+MediaAsset 1──* <referenced by Dish / Restaurant / MenuSnapshot> (by stable resource ID; `Review` reference when Review ships — deferred)
 ```
 
 Cardinalities are logical; physical FKs follow the same shape. Polymorphic `Contribution.subject` is modeled as explicit nullable FKs + a `subject_type` discriminator, not a stringly-typed generic reference — so integrity is checkable.
@@ -103,6 +104,8 @@ Identity for a food, independent of any restaurant.
 - `originRegion` — region/city of origin (nullable, with evidence level).
 - `mealOccasions` — e.g., breakfast/lunch/dinner/snack (array, validated).
 - `flavorProfile` / `textureProfile` — structured enums/tags (spicy, sour, sweet, savory; crispy, soupy…), not free prose, so filtering is deterministic.
+- `ingredients[]` — validated `IngredientValue`s (ADR 0004): `{ name, normalizedId?, role: core | common | optional | garnish, evidenceLevel: known | common | confirmed | unknown, sourceRef? }`. Describes the **typical recipe**, not guaranteed preparation.
+- `allergenStatuses[]` — validated `AllergenStatus` values (ADR 0004): `{ allergen: AllergenCode (centralized Effect Schema enum), status: present | possibly_present | confirmed_absent | unknown, evidence?, sourceRef? }`. An allergen with no entry is `unknown`. `confirmed_absent` requires restaurant confirmation (or moderator-verified evidence) — never AI inference, never absence of mention.
 - `typicalPriceRange` — **derived**, never stored as a fact. Computed from `PriceObservation`s (median/percentiles). Displayed with evidence count + area + date range.
 - `status` — `draft | published | merged | deprecated` (merging keeps alias + redirect).
 
@@ -137,12 +140,47 @@ preserved where they are observed — on the menu item:
   migration that creates the table from `MenuItem.variantLabel`
   values + a curation pass — recorded in a new ADR. Do not pre-build it.
 
-### 4.4 `Ingredient` / `Allergen`
+### 4.4 `Ingredient` / `Allergen` — validated values, NO tables (ADR 0004)
 
-- `Ingredient`: `id`, `name` (canonical + translations), `category`.
-- `DishIngredient` (join): `dishId`, `ingredientId`, `role` (`core | common | optional | garnish`), `evidenceLevel` — see §5.
-- `Allergen`: fixed vocabulary table (`peanut`, `tree_nut`, `shellfish`, `fish`, `egg`, `dairy`, `gluten`, `soy`, `sesame`, …). `IngredientAllergen` maps ingredient → allergen.
-- **Invariant:** Allergen flags are derived from ingredients + evidence level, never from LLM absence ("model didn't mention peanut" ≠ "peanut-free").
+There are no `Ingredient`, `Allergen`, `DishIngredient`, or
+`IngredientAllergen` tables in the MVP. Ingredients and allergen
+statuses are validated structured values owned by `Dish` (typical
+recipe) and, where evidenced, by `MenuItem` (this serving):
+
+- `IngredientValue`: `name` (original, verbatim where from menu
+  text), `normalizedId?` (optional dedup aid, e.g. `fish-sauce` —
+  NOT a foreign key), `role` (`core | common | optional | garnish`),
+  `evidenceLevel` (`known | common | confirmed | unknown` — see
+  `data-provenance.md` §4.1), `sourceRef?` (snapshot / contribution
+  / curation ref where available).
+- `AllergenStatus`: `allergen` (`AllergenCode` — one centralized
+  Effect Schema enum in `packages/contracts`; no arbitrary allergen
+  strings anywhere), `status` (`present | possibly_present |
+  confirmed_absent | unknown`), `evidence?` (how established),
+  `sourceRef?`. An allergen with no entry is `unknown`.
+- `Dish.ingredients[]` / `Dish.allergenStatuses[]` describe the
+  typical recipe — not a guarantee about any restaurant's
+  preparation. `MenuItem.ingredients[]` / `MenuItem.allergenStatuses[]`
+  (optional) carry that serving's evidence-backed values from the
+  menu; when present they take precedence for that serving, otherwise
+  reasoning falls back to the Dish-level typical values with
+  uncertainty surfaced.
+- **Invariant:** Allergen statuses are explicit per-dish (or
+  per-serving) values, never derived from a shared mapping (there
+  is none) and never from LLM absence ("model didn't mention
+  peanut" ≠ "peanut-free"). `confirmed_absent` requires restaurant
+  confirmation (or moderator-verified evidence). AI may propose
+  ingredients / allergen concerns (menu text → `known`;
+  unsourced suggestion → `common` / `possibly_present` at most)
+  but can never set `confirmed_absent`. Cross-contact risk is
+  `possibly_present` + an uncertainty entry (e.g.
+  `cross_contact_unknown`), never collapsed into absent/unknown.
+- **Promotion path (only if evidence demands it later):** if
+  cross-dish ingredient querying, duplicated vocabulary
+  maintenance, or centrally curated ingredient→allergen
+  relationships require tables, promote via a new ADR + migration
+  from the value arrays + a curation pass. Do not pre-build a food
+  ontology.
 
 ### 4.5 `Restaurant`
 
@@ -193,7 +231,7 @@ first-class, low-friction path — not "append-only means unfixable":
 
 ### 4.7 `MenuItem` (restaurant-specific)
 
-- `id`, `snapshotId`, `originalName` (verbatim from menu — preserved), `translatedName` (locale map), `description` (verbatim or extracted; `null` if absent — never invented), `category`, `variantLabel` (nullable validated string, e.g. `sườn nướng`, from menu evidence, never invented; `null` = no variant stated — ADR 0002), `price` (nullable — missing price stays `null`), `currencyCode`, `sizeVariants` / `options` (see `MenuItemOption`), `dishId` (nullable mapping to canonical `Dish`), `mappingConfidence`, `uncertainties` (array: e.g., `price_unclear`, `ingredients_unknown`), `sortOrder`.
+- `id`, `snapshotId`, `originalName` (verbatim from menu — preserved), `translatedName` (locale map), `description` (verbatim or extracted; `null` if absent — never invented), `category`, `variantLabel` (nullable validated string, e.g. `sườn nướng`, from menu evidence, never invented; `null` = no variant stated — ADR 0002), `price` (nullable `Money` — integer minor units, see §7 Q2; missing price stays `null`), `currencyCode`, `sizeVariants` / `options` (see `MenuItemOption`), `dishId` (nullable mapping to canonical `Dish`), `mappingConfidence`, `ingredients[]` (optional, evidence-backed `IngredientValue`s from the menu — ADR 0004; absent = no menu-level evidence, fall back to Dish-level typical with uncertainty), `allergenStatuses[]` (optional, evidence-backed `AllergenStatus` values from the menu — ADR 0004; take precedence for this serving when present), `uncertainties` (array: e.g., `price_unclear`, `ingredients_unknown`, `cross_contact_unknown`), `sortOrder`.
 - **Invariant:** `originalName` is never overwritten by translation or normalization. Display always shows original alongside translation.
 - **Invariant:** Price `null` ≠ price 0. Missing price is displayed as unknown.
 
@@ -212,7 +250,7 @@ Evidence, not fact. Two distinct evidence kinds:
 | `listed` | Price printed on a menu / menu snapshot item | Advertised; may be stale, may exclude tax/service |
 | `receipt_paid` | Price actually paid on a receipt | Stronger for "what it costs"; must account for tax, discount, combo, portion |
 
-Fields: `id`, `kind`, `dishId` (nullable), `menuItemId` (nullable), `restaurantId`, `amount` (exact numeric), `currencyCode`, `observedAt`, `source` (`menu_snapshot | receipt | manual | contribution`), `sourceRef` (snapshot/receipt/contribution id), `portion` / `variant` (if known), `confidence`, `status` (`pending | published | rejected`), `createdBy` (private).
+Fields: `id`, `kind`, `dishId` (nullable), `menuItemId` (nullable), `restaurantId`, `amountMinor` (integer minor units, Postgres `BIGINT` — see §7 Q2 / `typescript.md` Money boundary; never float, never `numeric`), `currencyCode`, `observedAt`, `source` (`menu_snapshot | receipt | manual | contribution`), `sourceRef` (snapshot/receipt/contribution id), `portion` / `variant` (if known), `confidence`, `status` (`pending | published | rejected`), `createdBy` (private).
 
 **Invariants:**
 
@@ -240,13 +278,13 @@ Fields: `id`, `kind`, `dishId` (nullable), `menuItemId` (nullable), `restaurantI
 
 ### 4.12 `MediaAsset`
 
-- `id` (stable resource ID), `kind` (`food_image | restaurant_image | icon | banner | graphic | menu_photo | receipt | review_photo`), `storageKey`, `bucket` (`public | private`), `mimeType`, `byteSize`, `width/height`, `altText` (locale map), `aliases[]`, `status` (`draft | published | archived`), `createdBy`, `createdAt`.
+- `id` (stable resource ID), `kind` (`food_image | restaurant_image | icon | banner | graphic | menu_photo | receipt | review_photo` — `review_photo` reserved, unused until Review ships), `storageKey`, `bucket` (`public | private`), `mimeType`, `byteSize`, `width/height`, `altText` (locale map), `aliases[]`, `status` (`draft | published | archived`), `createdBy`, `createdAt`.
 - Bytes in object storage; metadata + mappings in Postgres. Changing an image = new object + metadata update + cache invalidation; old IDs remain resolvable where referenced.
 - Menu photos / receipts are `private` by default. Public display assets are `public`.
 
 ### 4.13 `Contribution`
 
-State machine wrapping any user-submitted data (menu scan, correction, price report, review, photo).
+State machine wrapping any user-submitted data (menu scan, correction, price report, photo — `review` joins as a subject type only when Review ships; Review is deferred, see §4.14).
 
 - `id`, `ownerUserId` (private, **nullable FK, `ON DELETE SET NULL`,
   never `CASCADE`** — ADR 0003), `attribution` (immutable snapshot,
@@ -255,7 +293,7 @@ State machine wrapping any user-submitted data (menu scan, correction, price rep
   rewritten by a link event; **internal-only**: no public API
   response or published page may contain a user id, email, or raw
   internal identifier — public surfaces expose only the
-  `displayLabel`), `subjectType` (`menu_scan | correction | price_report | review | photo`), `subjectRefs` (explicit FKs), `status`: `draft → submitted → pending_review → published | rejected | needs_more_info`, `moderationNotes` (private), `reviewedBy`, `reviewedAt`, `createdAt`.
+  `displayLabel`), `subjectType` (`menu_scan | correction | price_report | photo` in the MVP; `review` joins only when Review ships — deferred, §4.14), `subjectRefs` (explicit FKs), `status`: `draft → submitted → pending_review → published | rejected | needs_more_info`, `moderationNotes` (private), `reviewedBy`, `reviewedAt`, `createdAt`.
 - **Transitions:** only forward through moderation; `published` is terminal for that version (a correction creates a new contribution + new snapshot, not a mutation). Rejection records a reason; user can resubmit as a new contribution.
 - **Invariant:** Publishing a contribution never publishes the contributor's profile, preferences, or order history.
 - **Anonymous submissions (ADR 0003):** menu scans, corrections,
@@ -272,10 +310,25 @@ State machine wrapping any user-submitted data (menu scan, correction, price rep
   becomes `NULL` and the attribution snapshot preserves original
   provenance.
 
-### 4.14 `Review`
+### 4.14 `Review` — DEFERRED from the MVP (future independent entity)
+
+**Do not build the `Review` table during the initial scan-to-order
+MVP.** Review is deferred — but it is **not** a value object. It
+must never be stored as a JSONB array on `Dish` or `Restaurant`,
+and no placeholder ratings or review statistics may be introduced
+without actual supporting data (no average ratings, no review
+counts, no stars from empty data).
+
+When Review ships, it is an independent entity because it has its
+own author, target, timestamps, moderation state, and lifecycle.
+Reserved future shape (not implemented in the MVP):
 
 - `id`, `subjectType` (`dish | restaurant`), `subjectId`, `userId` (private), `rating` (nullable — reviews without ratings allowed), `text` (nullable), `photos[]` (MediaAsset refs), `status` (`pending | published | rejected | removed`), `createdAt`, `helpfulness` (derived, not stored as fact).
 - Reviews are opinions, not evidence for ingredients/prices. Never use review text as the sole source for a dietary or price claim.
+- Reviews require Google sign-in when implemented (ADR 0003).
+  Corrections, menu scans, and price reports stay under the
+  `Contribution` workflow — they are not reviews and must not be
+  confused with them.
 
 ### 4.15 `MenuTemplate` / `MenuTemplateVersion`
 
@@ -363,7 +416,7 @@ AI-extracted information carries confidence + provenance. LLM-generated descript
 ## 6. Key invariants (checklist for reviewers)
 
 1. Snapshots are append-only; corrections = new versions.
-2. Prices are exact numerics + currency + timestamp; `null` ≠ 0.
+2. Prices are integer minor units (`amountMinor`, `BIGINT`) + currency + timestamp; `null` ≠ 0. Never float, never `numeric`.
 3. Listed vs receipt-paid observations are distinct kinds.
 4. Price stats are deterministic (median/percentiles), never LLM-computed.
 5. Original text is never overwritten by translation.

@@ -121,14 +121,14 @@ In Effect 4.0.0, packages are consolidated into a single `effect` package; all `
 
 | Domain | Owns |
 |---|---|
-| Catalog | Dish, DishAlias, Ingredient, Allergen, dish matching (variants live on `MenuItem.variantLabel`, no `DishVariant` table — ADR 0002) |
+| Catalog | Dish, DishAlias, dish matching (variants live on `MenuItem.variantLabel`, no `DishVariant` table — ADR 0002; ingredients/allergens are validated values on `Dish`/`MenuItem`, no reference tables — ADR 0004) |
 | Restaurants | Restaurant identity, location (PostGIS), attributes |
 | Discovery | Search intent → ranked dishes/restaurants (deterministic ranking) |
 | Personalization | UserPreference, FavoriteDish, recommendation inputs (explicit > demographic) |
 | Menus | MenuSnapshot, MenuItem, MenuItemOption, extraction persistence, versioning |
 | Ordering | OrderDraft, bilingual order view generation |
 | Pricing | PriceObservation, price stats (median/percentiles), evidence rules |
-| Contributions | Contribution state machine, moderation, provenance |
+| Contributions | Contribution state machine, moderation, provenance (Review deferred from MVP — future entity, see `domain-model.md` §4.14) |
 | Identity | AuthN/AuthZ, roles, audit trail |
 | Resources | MediaAsset / resource registry, object storage |
 | Prompt Registry | PromptDefinition / PromptVersion, publishing, audit |
@@ -147,7 +147,7 @@ Within each domain, separate business logic, application workflows, persistence,
 - **PostgreSQL full-text search** for dish/restaurant search. **Do NOT introduce OpenSearch** unless search requirements provably exceed Postgres FTS in a measured test.
 - **H3** is deferred. Consider only if geographic price aggregation provably needs it.
 - **Migrations + explicit indexes.** Every query path used by the demo (nearby restaurants, dish lookup, menu-by-restaurant, price observations by dish+area) gets an index decided deliberately, not by default.
-- **Money:** exact numeric (`numeric` / integer minor units — decide once in M0 and document; never `float`/`double` for money). Always store `currency_code` + timestamp alongside amounts. MVP currency: VND; model must support others without redesign.
+- **Money:** integer minor units end to end — Postgres `BIGINT amount_minor` + currency code; Effect Schema `Money = { amountMinor, currency }`; JSON `{ amountMinor, currency }`; integer-only frontend arithmetic (DECIDED 2026-10-16, review amendment; see `domain-model.md` §7 Q2, `typescript.md` Money boundary). Never `float`/`double`, never `numeric`, never `BigInt` on the wire. Always store `currency_code` + timestamp alongside amounts. MVP currency: VND; model must support others without redesign.
 - **Timestamps:** store UTC; preserve both extraction timestamp and observed-menu timestamp where known (see `data-provenance.md`).
 
 ### 2.5 AI integration — provider-agnostic behind Effect services

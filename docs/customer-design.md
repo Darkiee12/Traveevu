@@ -208,7 +208,7 @@ Evidence tiers (from `product.md` §3.4) map to fixed UI treatments:
 | Restaurant-confirmed | Green check + "Confirmed by restaurant" (only when actually confirmed) |
 | Unknown preparation | Amber warning block: "Preparation unknown — ask staff about [allergen]" |
 
-Allergen warnings: red + warning icon + allergen name in text. Never a bare icon. Never a green "safe" badge derived from absence. The dish page lists allergens with their tier; the menu item shows a compact warning; the order review repeats warnings for selected items.
+Allergen warnings: red + warning icon + allergen name in text. Never a bare icon. Never a green "safe" badge derived from absence. The dish page lists allergens with their ADR 0004 status (`present` / `possibly_present` / `confirmed_absent` / `unknown`); a green check appears only for `confirmed_absent` on that specific allergen (restaurant-confirmed). `possibly_present` / `unknown` show a warning, never a safe badge. Dish-level values are labeled as typical recipe, not guaranteed preparation; MenuItem-level values, when present, take precedence for that serving. The menu item shows a compact warning; the order review repeats warnings for selected items.
 
 ## 7. Motion
 
@@ -256,7 +256,7 @@ Empty states always offer **one** next action. Error states always offer retry a
 - Not a dashboard (no stat cards, no tables, no sidebar).
 - Not a chatbot (no conversation thread, no "AI is typing").
 - Not a delivery app (no checkout, no payment, no order tracking).
-- Not a social app (no feed, no follows, no comments threads — reviews are structured, not conversational).
+- Not a social app (no feed, no follows, no comments threads — reviews, when implemented, are structured, not conversational; Review is deferred from the MVP — see `domain-model.md` §4.14).
 - Not a generic map app (map serves dish-first discovery only).
 
 ## 12. Acceptance Criteria (design)
