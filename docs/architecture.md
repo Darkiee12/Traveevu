@@ -125,7 +125,7 @@ In Effect 4.0.0, packages are consolidated into a single `effect` package; all `
 | Restaurants | Restaurant identity, location (PostGIS), attributes |
 | Discovery | Search intent → ranked dishes/restaurants (deterministic ranking) |
 | Personalization | UserPreference (incl. `tasteAnchors`, ADR 0005), recommendation inputs (explicit > demographic) |
-| Menus | MenuSnapshot, MenuItem, MenuItemOption, extraction persistence, versioning |
+| Menus | MenuCaptureSession, MenuSnapshot, PublishedMenuRevision, MenuItem, MenuItemOption, extraction persistence, versioning, current-menu resolution (ADR 0006) |
 | Ordering | OrderDraft, bilingual order view generation |
 | Pricing | PriceObservation, price stats (median/percentiles), evidence rules |
 | Contributions | Contribution state machine, moderation, provenance (Review deferred from MVP — future entity, see `domain-model.md` §4.14) |
@@ -180,16 +180,16 @@ See `ai-boundaries.md` for the full contract. Summary:
 
 ```
 1. User photographs menu (customer app)
-     → upload (validated: type, size) → private bucket + MenuSnapshot (draft)
+     → upload (validated: type, size) → private bucket + MenuCaptureSession (private, token-based for guests; ADR 0006)
 2. AI menu extraction (provider structured output)
-     → validated MenuSnapshot payload (unknown stays unknown)
+     → validated MenuExtraction payload (unknown stays unknown)
      → AIExecution logged (promptVersion, model, latency, tokens, validation)
 3. User confirms / corrects extraction (customer app)
-     → corrections create a NEW observation/version, never silent overwrite
-4. Presentation build (template + snapshot → MenuPresentation, validated)
+     → confirm materializes a private MenuSnapshot (draft); corrections create a NEW observation, never silent overwrite
+4. Presentation build (template + revision-or-private-snapshot → MenuPresentation, validated)
      → renderer maps nodes → known React controls
 5. User selects items / sizes / modifiers / quantities / notes
-     → OrderDraft (user-private, never in shared snapshot)
+     → OrderDraft (user-private, pins menuRef; never in shared content)
      → deterministic total math from menu data only
 6. Bilingual order view (customer lang + original VN names/modifiers)
      → user shows phone to staff. No order submission, no payment.
@@ -246,7 +246,7 @@ Full design in `roadmap.md` / studio planning docs. Summary of the storage decis
 - YAML is an authoring/seed format, **never** the live persistence mechanism.
 - Published prompts/templates never bypass validated output contracts. Publishing runs the same validation as execution.
 - Changing an image / prompt / template never requires frontend redeployment.
-- Cache invalidation is keyed by version: presentation cache key = `(restaurantId, snapshotVersion, templateVersion)`. Publishing a new template version invalidates derived presentations; it never mutates stored snapshots.
+- Cache invalidation is keyed by version: presentation cache key = `(publishedRevisionId, templateVersion, locale)` (shared) or `(snapshotId, templateVersion, locale)` (private). Publishing a new template version invalidates derived presentations; it never mutates stored snapshots or revisions. Corroboration does not invalidate (same revision id). See ADR 0006 §2.10.
 - Audit history is append-only: who published what, when, from which draft.
 - No unrestricted remote CSS/JS execution. Appearance config is a versioned set of design tokens + resource references, mapped to known code. A completely new executable component requires a code change + deploy.
 

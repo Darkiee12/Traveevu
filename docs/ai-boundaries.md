@@ -31,7 +31,7 @@
 
 | Question | Who decides? |
 |---|---|
-| Does this dish match the user's dietary restrictions? | Deterministic filter on `DishIngredient` + evidence levels |
+| Does this dish match the user's dietary restrictions? | Deterministic filter on `Dish.ingredients[]` / `Dish.allergenStatuses[]` (+ `MenuItem`-level values when present) + evidence levels (ADR 0004 — no `DishIngredient` table) |
 | Is this price within budget? | Deterministic comparison on exact numerics |
 | Is this restaurant within X km? | Deterministic PostGIS query |
 | What did the user *mean* by "not soup, spicy"? | AI intent extraction → validated intent → deterministic filter |
@@ -105,7 +105,7 @@ Uncertainty { field: string; reason: string; severity: enum }
 - Missing / illegible → `null` + `Uncertainty`, displayed as unknown. Never fill with a "typical" price or guessed ingredient.
 - Do not invent prices, options, or ingredients when the image lacks them.
 - Categories, sizes, options come from the image only.
-- User correction after extraction creates a new snapshot version (see `domain-model.md` §4.6), not a silent edit of the AI output.
+- User correction after extraction creates a new snapshot (candidate snapshot + new revision on approval — see `domain-model.md` §4.6, ADR 0006 §5), not a silent edit of the AI output.
 
 ### 2.3 `Translation`
 
@@ -122,7 +122,7 @@ Uncertainty { field: string; reason: string; severity: enum }
 
 ### 2.5 `RecommendationExplanation`
 
-- Input: dish + deterministic ranking features (shared ingredients with favorites, flavor overlap, price fit, dietary compatibility, distance) + user prefs.
+- Input: dish + deterministic ranking features (shared ingredients with taste anchors, flavor overlap, price fit, dietary compatibility, distance) + user prefs.
 - Output: short explanation referencing **only** the supplied features. The model must not introduce new claims (e.g., must not claim an ingredient not in the feature list).
 - Explanation is display-only; it never changes ranking.
 
@@ -186,12 +186,14 @@ Defenses (all required):
 
 ## 6. Dietary & allergy safety — AI's limits (normative)
 
-This is a safety rule, not copywriting. See also `data-provenance.md` §4.
+This is a safety rule, not copywriting. See also `data-provenance.md` §4 and ADR 0004 (ingredients/allergens are validated values, no tables).
 
 - **Never claim a dish is safe for an allergy merely because the model did not identify that ingredient.**
 - Ingredient evidence has four levels: `known` (restaurant-confirmed / menu-stated) / `common` (common recipe knowledge) / `confirmed` (restaurant-confirmed — strongest) / `unknown` (no evidence). The UI must distinguish them.
-- AI may *suggest* candidate ingredients ("this dish commonly contains X") — those are labeled `common`, never promoted to `known` without evidence.
-- Dietary filtering is deterministic: a dish is shown as compatible only if its **known/confirmed** ingredients pass the user's constraints AND no `unknown` preparation detail blocks a safe claim. When preparation is unknown, the UI says so ("preparation unknown — ask staff about Y") rather than showing a green checkmark.
+- Allergen status is four-state and separate from ingredient evidence: `present | possibly_present | confirmed_absent | unknown`. An allergen with no entry is `unknown`. `confirmed_absent` requires restaurant confirmation (or moderator-verified evidence) — AI can never set it, and absence of mention never implies it. Cross-contact risk is `possibly_present` + an uncertainty entry (`cross_contact_unknown`), never collapsed into absent/unknown.
+- AI may *suggest* candidate ingredients ("this dish commonly contains X") — those are labeled `common`, never promoted to `known` without evidence. An unsourced AI suggestion supports at most `possibly_present` for its allergen, never `present`.
+- Dish-level values describe the **typical recipe**, not guaranteed preparation. `MenuItem`-level values, when present, take precedence for that serving; otherwise reasoning falls back to the Dish-level typical values with uncertainty surfaced.
+- Dietary filtering is deterministic: for a **strict allergen exclusion**, a "safe" verdict requires `confirmed_absent` for that allergen at the applicable level (MenuItem-level if present, else Dish-level) AND no `possibly_present` / `unknown` blocking the claim. Anything else → "cannot confirm safe": show the warning, suggest asking staff. When preparation is unknown, the UI says so ("preparation unknown — ask staff about Y") rather than showing a green checkmark.
 - If the user has a severe allergy, the UI must surface uncertainty prominently. Do not design a flow where "no warning shown" reads as "safe".
 
 ## 7. Prompt registry interaction

@@ -66,8 +66,8 @@ trust in the submitter.
   unsubmitted image is deleted per the retention rule above.
 - **The shared menu never contains private data.** A published
   `MenuSnapshot` / contribution carries menu/price/review evidence
-  only — never `UserPreference`, `FavoriteDish`, or `OrderDraft`
-  fields. See `data-provenance.md` §5.2.
+  only — never `UserPreference` (incl. taste anchors, ADR 0005)
+  or `OrderDraft` fields. See `data-provenance.md` §5.2.
 
 ### 2. What anonymous guests may submit — and what still needs sign-in
 
@@ -94,7 +94,7 @@ domain model must keep these classes visibly distinct:
 | Evidence | Backing | Verification on moderation |
 |---|---|---|
 | Menu scan | Menu photo + extraction payload + confidence | Moderator checks extraction against the photo. Image-backed, re-verifiable. Highest of the three. |
-| Correction | Field-level change list (`field, oldValue, newValue, reason, actor, at`) against a published snapshot | Moderator checks the diff + reason against prior evidence. May need new evidence. |
+| Correction | Field-level change list (`field, oldValue, newValue, reason, actor, at`) against the current published revision (ADR 0006 §5) | Moderator checks the diff + reason against prior evidence. May need new evidence. On submit, a candidate snapshot is materialized; on approval, a new revision references it. |
 | Price report, receipt-backed | Receipt photo, legible line items | Moderator checks line items; stored as `PriceObservation` source `receipt`, kind `receipt_paid`. |
 | Price report, manually entered | Typed numbers, no backing image | **Never stored as receipt-backed.** Source `manual`, kind stays `listed`-class at best, confidence capped, and if published it is labeled "reported price, unverified". Manual and receipt-backed observations are never aggregated or displayed equivalently. |
 
