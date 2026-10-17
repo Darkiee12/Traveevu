@@ -1,8 +1,9 @@
 # AGENTS.md — Traveevu
 
-> **EXECUTION_MODE = `PLANNING`.** Write no application code until the user
-> explicitly authorizes `BUILD` and implementation is permitted under
-> hackathon rules. Planning docs only. Never silently change the mode.
+> **EXECUTION_MODE = `BUILD`** (authorized 2026-10-17). M0 implementation in
+> progress on branch `impl/m0-scan-to-order` (local-only; do not push or
+> merge without separate authorization). Planning docs + ADRs 0001–0006 are
+> architectural constraints. PR #1 stays separate.
 
 ## Project overview
 
@@ -205,3 +206,13 @@ pin library source as a read-only reference so agents read real APIs.
   `docs/decisions/`.
 - If the reference is stale or missing, say so and check the installed
   package / official docs — do not guess APIs from memory.
+
+## Vendored Repositories
+
+This project vendors external repositories under @repos/
+
+- Use vendored repositories as read-only reference material when working with related libraries
+- Prefer examples and patterns from the vendored source code over generated guesses or web search results
+- Do not edit files under @repos/ unless explicitly asked
+- Do not import from @repos/ - application code should continue importing from normal package dependencies
+- Pinned: repos/effect squashed from Effect main @ 7f32606ba (package version 4.0.5), matching installed effect@4.0.5 — no version mismatch. Re-check the pin when upgrading the effect package.

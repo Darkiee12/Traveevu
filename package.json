@@ -1,0 +1,1 @@
+{"devDependencies":{"turbo":"^2.0.0","typescript":"^5.9.0"},"name":"traveevu","packageManager":"bun@1.4.2","private":true,"scripts":{"build":"turbo run build","check":"turbo run check","dev":"turbo run dev","test":"turbo run test","test:e2e":"turbo run test:e2e"},"workspaces":["apps/*","packages/*"]}

@@ -1,0 +1,23 @@
+{
+  "dependencies": {
+    "@effect/ai-openai": "^4.0.5",
+    "@effect/platform-node": "^4.0.5",
+    "@traveevu/contracts": "workspace:*",
+    "effect": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.9.0"
+  },
+  "name": "@traveevu/api",
+  "private": true,
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "dev": "bun --watch src/index.ts",
+    "evaluate": "bun scripts/evaluate.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
