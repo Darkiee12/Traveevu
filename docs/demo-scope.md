@@ -125,7 +125,7 @@ Do not start P3/P4 to "make progress" while P1 is unverified.
 | Full personalization engine / ML recommender | Rule + preference-similarity ranking is enough; ML adds risk without demo value | Deferred |
 | Chatbot assistant | Explicitly against product philosophy | NL search box only |
 | Native apps, offline-first sync, multi-city launch | Web, HCMC seed only | Deferred |
-| Social feed / following / messaging | Reviews + corrections only | Deferred |
+| Social feed / following / messaging | Reviews only if ever built (Review deferred — see `domain-model.md` §4.14). Corrections stay in the Contribution workflow, never social. | Deferred |
 | Auto-publishing AI extractions | Human confirm + moderation required | Manual review queue |
 | Unrestricted remote CSS/JS theming | Versioned design tokens only | Security boundary |
 | Real-time availability / inventory | Menus are point-in-time observations | Staleness labeled |

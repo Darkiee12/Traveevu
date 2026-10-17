@@ -67,9 +67,9 @@ field, or a later extension:
 |---|---|
 | `Restaurant` | Identity + location (PostGIS point) + locale. No menu data embedded. |
 | `MenuSnapshot` | One observation of one restaurant's menu at one time: source image ref, observed-at, extraction confidence, status (`draft` → `published` / `rejected`), supersedes link. Never mutated in place — new scan = new snapshot. |
-| `MenuItem` | One row inside a snapshot: original name (verbatim), translated name, description, category, price (minor units + currency), size/options. Belongs to exactly one snapshot. |
+| `MenuItem` | One row inside a snapshot: original name (verbatim), translated name, description, category, price (minor units + currency), size/options. May carry its own evidence-backed `ingredients[]` / `allergenStatuses[]` for this serving (ADR 0004). Belongs to exactly one snapshot. |
 | `MenuItemOption` | A documented size / modifier / choice group on a `MenuItem`. Only options present in the evidence exist. No invented options. |
-| `Dish` | Canonical, restaurant-independent dish (e.g. Cơm tấm): canonical name, aliases, ingredients (known vs. common), allergens, dietary notes, origin, flavor/texture. Linked from `MenuItem` by a nullable, confidence-scored mapping — mapping is a guess, never a fact. |
+| `Dish` | Canonical, restaurant-independent dish (e.g. Cơm tấm): canonical name, aliases, ingredients as validated values (`{ name, normalizedId?, role, evidenceLevel, sourceRef? }` — typical recipe, not guaranteed preparation), allergen statuses as validated values (four-state: `present \| possibly_present \| confirmed_absent \| unknown`; missing ≠ confirmed absent), dietary notes, origin, flavor/texture. Linked from `MenuItem` by a nullable, confidence-scored mapping — mapping is a guess, never a fact. See ADR 0004. |
 | `PriceObservation` | One price evidence event: source type (`menu-listed` vs `receipt-paid`), amount, currency, dish/menu-item ref, observed-at, confidence. Listed ≠ paid; keep them distinct. |
 | `Contribution` | The provenance wrapper for a user-submitted scan/receipt/correction: who (pseudonymous; anonymous evidence submissions allowed, `pending_review`, never auto-published — ADR 0003), what, source refs, status, moderation decision. Owner FK nullable (`ON DELETE SET NULL`) + immutable attribution snapshot so contributions survive anonymous-user deletion. Private profile/order data is never part of it. |
 | `OrderDraft` | Ephemeral, user-private selection state: snapshot ref + chosen items/options/quantities + free-text notes (flagged as unconfirmed) + estimated total. Never stored inside a shared snapshot. |
@@ -77,9 +77,16 @@ field, or a later extension:
 
 Deliberately **not** first-class tables in the MVP: `DishVariant`
 (a row on `Dish` / `MenuItem` with a `variant` label until variants prove
-they need their own lifecycle), `Ingredient` / `Allergen` as standalone
-registries (start as validated value objects on `Dish`; promote only if
-cross-dish querying demands it), `Review` (defer unless demo needs it),
+they need their own lifecycle — ADR 0002), `Ingredient` / `Allergen` as standalone
+registries (no `Ingredient` / `Allergen` / `DishIngredient` / `IngredientAllergen`
+tables — validated values on `Dish`, optional evidence-backed values on `MenuItem`;
+allergen vocabulary is one centralized Effect Schema enum; promote to tables only
+on the ADR 0004 triggers: cross-dish ingredient querying, duplicated vocabulary
+maintenance, or centrally curated ingredient→allergen relationships), `Review`
+(deferred from the MVP entirely — future independent entity with its own author,
+target, timestamps, moderation state, and lifecycle; NOT a value object, no table
+now, never a JSONB array on `Dish`/`Restaurant`; no placeholder ratings/stats
+without real data — see `domain-model.md` §4.14),
 `FavoriteDish` (a preference value on the user profile, not a join-heavy
 entity yet). `UserPreference` is a single versioned profile document per
 user (JSONB under a schema), not a normalized preference graph.
@@ -536,7 +543,7 @@ decision or a verified fact.
 
 | # | Question | Owner | Unblocks BUILD when… |
 |---|---|---|---|
-| P1 | ~~Is anonymous demo (no account) acceptable, or must travelers sign in?~~ **RESOLVED 2026-10-16 (ADR 0001): guest-first** — browsing, scanning, order drafts need no sign-in; Google Sign-In offered at save moments and for reviews / persistent contributor profiles (ADR 0003: submitting evidence needs no sign-in). | Product / user | ✅ Decision recorded in `docs/auth.md` + `docs/decisions/0001-better-auth-google.md` + `docs/decisions/0003-anonymous-contributions.md` |
+| P1 | ~~Is anonymous demo (no account) acceptable, or must travelers sign in?~~ **RESOLVED 2026-10-16 (ADR 0001): guest-first** — browsing, scanning, order drafts need no sign-in; Google Sign-In offered at save moments and for persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence needs no sign-in). | Product / user | ✅ Decision recorded in `docs/auth.md` + `docs/decisions/0001-better-auth-google.md` + `docs/decisions/0003-anonymous-contributions.md` |
 | P2 | Which HCMC seed restaurants/dishes (small curated set) may we use, and under what license/permission? | Product / data | Seed list + provenance note exists; no scraped data enters the repo |
 | P3 | What exactly may the demo claim about dietary safety? Confirm the four evidence tiers (known / common / confirmed / unknown) and the "never claim safe from absence" rule in demo copy. | Product | Wording approved; renderer shows tiers, never a bare "safe" badge |
 | P4 | Demo language set: Vietnamese + English only, or more? | Product | Locale list fixed; translation scope bounded |
@@ -563,7 +570,7 @@ decision or a verified fact.
 | # | Question | Owner | Unblocks BUILD when… |
 |---|---|---|---|
 | U1 | ~~Admin auth mechanism (session? magic link? single admin seed account?) and who holds admin credentials during the demo?~~ **RESOLVED 2026-10-16 (ADR 0001):** Better Auth session + server-side `RequireAdmin` (DB role). Admin granted only explicitly (existing admin or audited seed allowlist); Google sign-in never auto-grants admin. | Eng | ✅ Mechanism chosen; admin routes protected in M0 |
-| U2 | ~~Do travelers need any account for contributions, or is contribution anonymous-with-moderation?~~ **RESOLVED 2026-10-17 (ADR 0003, amending ADR 0001):** anonymous guests may *submit* menu scans, corrections, and price reports — all enter `pending_review`, never auto-published, MVP keeps manual approval. Reviews + persistent contributor profiles still require Google sign-in. Scan and submit are separate actions (scanning is NOT local-only: images are processed privately server-side, temp storage + retention + disclosure — ADR 0003 §1); submitting needs explicit confirmation before extracted data is shared for moderation. Manual prices are never receipt-backed. | Product / eng | ✅ Decision recorded in `docs/decisions/0003-anonymous-contributions.md`; `auth.md`, `domain-model.md`, `data-provenance.md` reconciled |
+| U2 | ~~Do travelers need any account for contributions, or is contribution anonymous-with-moderation?~~ **RESOLVED 2026-10-17 (ADR 0003, amending ADR 0001):** anonymous guests may *submit* menu scans, corrections, and price reports — all enter `pending_review`, never auto-published, MVP keeps manual approval. Reviews (when Review ships; deferred from MVP) + persistent contributor profiles still require Google sign-in. Scan and submit are separate actions (scanning is NOT local-only: images are processed privately server-side, temp storage + retention + disclosure — ADR 0003 §1); submitting needs explicit confirmation before extracted data is shared for moderation. Manual prices are never receipt-backed. | Product / eng | ✅ Decision recorded in `docs/decisions/0003-anonymous-contributions.md`; `auth.md`, `domain-model.md`, `data-provenance.md` reconciled |
 
 ### Demo logistics
 

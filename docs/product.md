@@ -79,7 +79,7 @@ The UI must communicate uncertainty where it exists. A missing allergen warning 
 This is a **seed-data and demo scope**, not an architectural scope. The architecture must support additional cities, countries, currencies, and languages without major domain redesign:
 
 - No Vietnam-specific assumptions in shared domain logic (no hardcoded `VND`, `vi`, district names, or price bands in core types).
-- Currency is always carried as an ISO 4217 code alongside an exact numeric amount (minor units / decimal, never float).
+- Currency is always carried as an ISO 4217 code alongside an integer minor-units amount (`amountMinor`, never float, never decimal/`numeric`).
 - Language is a locale tag on content rows, not a column named `vietnamese_name`.
 - Geography is coordinates + administrative labels from data, not enums in code.
 - Dish, restaurant, menu, and price models must work for any city added later by seeding new data.
@@ -93,12 +93,12 @@ Full behavior lives in `user-journeys.md`; rendering rules in `menu-rendering.md
 1. **Personalized onboarding** — short, skippable; up to 5 favorite dishes; dietary restrictions, allergies, religious requirements (only when explicitly provided), spice tolerance, budget, adventurousness. Country/region may suggest familiar dishes but must never infer religion, dietary rules, or taste from nationality. Explicit preferences beat demographic assumptions.
 2. **AI-powered food discovery** — natural-language intent → validated structured search intent → ranked dishes, combined with preferences, constraints, location, availability, price observations, dish characteristics, meal context.
 3. **Dish-first discovery** — dish pages: canonical local name, aliases/spellings, translated name, description, ingredients, allergens, dietary notes, origin, meal occasion, flavor/texture, similar familiar foods, typical price range, nearby restaurants serving it. Regional variants are explicit, not collapsed — shown as variant-labelled menu items grouped on the dish page (`MenuItem.variantLabel`; no separate `DishVariant` table — ADR 0002).
-4. **Map + local price intelligence** — interactive map; filters by dish, distance, price, dietary suitability, restaurant attributes, reviews, personal relevance. Dish-level price context (e.g. observed price vs. nearby typical range) with median/percentile estimates where evidence suffices; explicit "insufficient evidence" otherwise.
+4. **Map + local price intelligence** — interactive map; filters by dish, distance, price, dietary suitability, restaurant attributes, personal relevance (reviews filter deferred with Review — see `domain-model.md` §4.14). Dish-level price context (e.g. observed price vs. nearby typical range) with median/percentile estimates where evidence suffices; explicit "insufficient evidence" otherwise.
 5. **AI menu scanning** — photograph a physical menu → structured extraction (original names, translations, descriptions, prices/currencies, categories, sizes, options, modifiers, quantity pricing, instructions). Preserve original wording. Missing/uncertain stays `unknown`. User can correct.
 6. **Interactive menu generation** — extracted menu becomes an interactive ordering UI via **schema-driven rendering** (see §6). Browse categories, understand dishes, select items/sizes/modifiers, set quantities, add special requests, review estimated total, see dietary warnings/uncertainties.
 7. **Bilingual ordering** — customer view in user's preferred language; staff view preserves original local names/modifiers, quantities, special requests translated into the restaurant's language, estimated total when supported. User shows phone to staff. **Order communication assistant, not payment or order submission.** No implication the restaurant accepted the order. Requested changes are distinguished from confirmed options.
 8. **Crowdsourced menu contributions** — confirmed extractions may be contributed as versioned menu observations (restaurant identity, image reference, extraction timestamp, observed menu timestamp, items, prices, source, confidence, verification/publication status). Next traveler reuses a trusted menu without re-scanning. Private profile/order data is never published with shared menus.
-9. **Community data** — menu photos, food photos, receipts, price observations, restaurant/dish reviews, corrections. Receipts are stronger price evidence than manual submissions but not automatically authoritative (taxes, discounts, combos, portions). Raw receipt images stay private by default; detect/protect personal/transactional info. All UGC needs moderation + provenance.
+9. **Community data** — menu photos, food photos, receipts, price observations, corrections. (Restaurant/dish reviews deferred with Review — see `domain-model.md` §4.14.) Receipts are stronger price evidence than manual submissions but not automatically authoritative (taxes, discounts, combos, portions). Raw receipt images stay private by default; detect/protect personal/transactional info. All UGC needs moderation + provenance.
 
 ## 6. Schema-Driven UI (product-level rule)
 
@@ -126,7 +126,7 @@ Explicitly out — do not build, do not imply in UI copy:
 | Chatbot assistant as primary UX | NL search box only |
 | Multi-city launch | HCMC D1/D3/Bình Thạnh seed only; architecture stays generic |
 | Native mobile apps | Mobile-first responsive web |
-| Social feed / following / messaging | Reviews + corrections only |
+| Social feed / following / messaging | Reviews only if ever built (Review deferred — see `domain-model.md` §4.14). Corrections stay in the Contribution workflow, never social. |
 | Automated publishing of AI extractions | Human confirmation + moderation before publication |
 | Unrestricted remote CSS/JS theming in admin | Versioned design tokens only |
 

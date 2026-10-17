@@ -130,7 +130,7 @@ User taps "Map" / "Nearby" from a dish page, discovery results, or bottom nav.
 3. Filters in the sheet header: dish, distance (500m / 1km / 2km / 5km), price band, dietary suitability, restaurant attributes (e.g. seating, open now — only where data exists), relevance to preferences. Filters apply instantly; result count updates.
 4. Each restaurant card shows: name, distance, dish price at that restaurant (if observed) vs. **typical nearby range** (median + percentile band where evidence suffices), dietary note, and a "View menu" action when a menu exists.
 5. Price context example: `Cơm tấm — 85,000 VND · Typical nearby: 40,000–65,000 VND`. When the observed price sits above the typical band, the UI labels it ("Above typical range") without moralizing.
-6. Tap a restaurant → restaurant page (menus, dishes served, price observations, reviews) → "View menu" enters Journey 4 if a menu is available.
+6. Tap a restaurant → restaurant page (menus, dishes served, price observations; reviews deferred — see `domain-model.md` §4.14) → "View menu" enters Journey 4 if a menu is available.
 
 ### Happy path
 
@@ -221,7 +221,7 @@ The **Scan menu** action is visible within 15–30s of opening the app. Camera o
 
 ### Trigger
 
-User confirms a menu extraction (Journey 4, step 3) and is offered "Share this menu to help future travelers", or a user submits a correction / price observation / review from a dish or restaurant page.
+User confirms a menu extraction (Journey 4, step 3) and is offered "Share this menu to help future travelers", or a user submits a correction / price observation from a dish or restaurant page. (Review submission is deferred with Review — see `domain-model.md` §4.14.)
 
 ### Steps
 
@@ -230,7 +230,7 @@ User confirms a menu extraction (Journey 4, step 3) and is offered "Share this m
 3. Versioning: a new observation for the same restaurant creates a new `MenuSnapshot` version; history is preserved. A re-scan is compared against the current published menu and changes are surfaced ("3 prices changed, 1 item added").
 4. Reuse: the next traveler opening that restaurant sees "Menu from [date], verified [status]" and uses it directly without scanning. Staleness is labeled.
 5. Corrections: any user can flag an item ("Wrong price", "No longer served", "Wrong translation") with an optional note. Corrections enter the same moderation queue and, once accepted, create a new version — never silently overwrite history.
-6. Other contributions (reviews, price observations, food photos) follow the same pattern: submit → provenance recorded (source, timestamp, confidence) → moderation → publication. Receipt submissions keep raw images private by default.
+6. Other contributions (price observations, food photos) follow the same pattern: submit → provenance recorded (source, timestamp, confidence) → moderation → publication. Receipt submissions keep raw images private by default. (Reviews follow the same pattern when Review ships; deferred from MVP.)
 
 ### Happy path
 
@@ -263,6 +263,6 @@ The Share / Keep-private choice is one screen, one tap each, with a plain-langua
 ## Cross-Journey Notes
 
 - **Navigation:** Bottom nav (mobile): Discover · Map · Scan · Saved / Profile. Scan is always one tap away.
-- **Saved state:** Favorite dishes, saved restaurants, and recent menus persist across sessions for signed-in users (Better Auth + Google). Guests hold an in-progress draft on the device via an anonymous-plugin session; signing in claims it into the account (`onLinkAccount`) without losing the current menu/order. Sign-in is offered at save moments and for reviews / persistent contributor profiles (ADR 0003: submitting evidence does not require sign-in), never as a gate in front of scanning, ordering, or submitting evidence. See `docs/auth.md` §6.
+- **Saved state:** Favorite dishes, saved restaurants, and recent menus persist across sessions for signed-in users (Better Auth + Google). Guests hold an in-progress draft on the device via an anonymous-plugin session; signing in claims it into the account (`onLinkAccount`) without losing the current menu/order. Sign-in is offered at save moments and for persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence does not require sign-in), never as a gate in front of scanning, ordering, or submitting evidence. See `docs/auth.md` §6.
 - **Offline:** Reading a previously loaded menu / order summary must work without network where feasible; scanning requires network for AI extraction (stated honestly in UI).
 - **Language switching:** Changing preferred language re-renders customer views immediately; staff view always preserves original names regardless of UI language.
