@@ -69,9 +69,9 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 
 **Work:**
 
-1. Upload path: validated file type/size → private bucket → `MediaAsset` (private) + `MenuSnapshot` (draft).
+1. Upload path: validated file type/size → private bucket → `MediaAsset` (private) + `MenuCaptureSession` (private, token-based for guests; ADR 0006).
 2. AI task: menu extraction via published `PromptVersion` (draft → publish flow in code, minimal) + provider structured output + local re-validation + one retry max + `AIExecution` logging (prompt version, model, latency, tokens/cost, validation errors, no PII).
-3. Confirmation UI: list extracted items (original + translation + price + uncertainties), edit/correct, confirm → new snapshot version.
+3. Confirmation UI: list extracted items (original + translation + price + uncertainties), edit/correct, confirm → private `MenuSnapshot` (draft) with coverage.
 4. Dish mapping: deterministic normalized-alias lookup first; AI disambiguation only when ambiguous; low-confidence stays unmapped.
 5. AI eval fixtures (minimum 10 from `ai-boundaries.md` §8): clear / blurry / mixed-language / modifiers / no-price menus, receipt with discounts, multi-constraint NL query, ambiguous dish, adversarial injection, explanation with missing evidence.
 
@@ -83,7 +83,7 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 - [ ] Modifier menu: only printed options extracted; no invented modifiers.
 - [ ] No-price menu: prices null + uncertainty shown.
 - [ ] Adversarial fixture: injected instructions ignored; extraction only.
-- [ ] Corrections create a new snapshot version; history preserved.
+- [ ] Corrections create a new snapshot; history preserved.
 - [ ] `AIExecution` rows contain prompt version + model + validation errors and no PII.
 
 **Validation:** Domain tests (alias matching, snapshot versioning) + AI fixture tests (schema compliance + no invented facts) + integration test (upload → extraction → persistence). Fixture suite runs in CI and gates prompt publication.
@@ -100,11 +100,11 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 
 **Work:**
 
-1. Presentation builder: `buildPresentation(snapshot, templateVersion)` — pure, deterministic, validated. Template registry v1 (one standard template, published).
+1. Presentation builder: `buildPresentation(menuSource, templateVersion)` (`menuSource = PublishedMenuRevision | MenuSnapshot`) — pure, deterministic, validated. Template registry v1 (one standard template, published).
 2. Renderer: control registry (`section`, `dish-card`, `quantity`, `single-choice`, `multiple-choice`, `text-note`, `information`, `warning`) mapped to known React components. No AI-generated code.
-3. OrderDraft: pinned snapshot version, selections, deterministic totals (null if any price unknown), deterministic dietary warnings, free-text requests marked unconfirmed.
+3. OrderDraft: pinned `menuRef` (published revision *or* private snapshot), selections, deterministic totals (null if any price unknown), deterministic dietary evidence + per-user warning overlay, free-text requests marked unconfirmed.
 4. Bilingual order view: customer language + original VN names/modifiers, translated special requests (marked unconfirmed), estimated-total labeling, "request, not confirmed order" disclaimers in both languages.
-5. Persistence/reuse: contribution → moderation (approve/reject + reason, minimal) → published snapshot reusable without re-scan; snapshot date shown; "re-scan if outdated" affordance; menu-change diff (new scan vs previous published).
+5. Persistence/reuse: contribution → moderation (approve/reject + reason, minimal) → published revision reusable without re-scan; observation + verification dates + coverage shown; "re-scan if outdated" affordance; menu-change diff (candidate snapshot vs current published revision); equivalent re-scans corroborate without a new revision.
 6. Mobile visual validation: narrow + desktop viewports, screenshots/browser automation, spacing/overflow/translations/loading/error states.
 
 **Acceptance criteria:**
@@ -115,7 +115,7 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 - [ ] Bilingual view states (both languages) that this is a request, not an accepted order.
 - [ ] Second traveler reuses the published menu without re-scanning.
 - [ ] Menu-change diff surfaces added/removed/price-changed items.
-- [ ] Draft pinned to snapshot version; newer snapshot offers "review changes", never silently rebases.
+- [ ] Draft pinned to `menuRef`; newer revision offers explicit confirmed refresh, never silently rebases.
 - [ ] Visual review: mobile + desktop screenshots inspected (compilation ≠ validation).
 
 **Validation:** Playwright main mobile journey + integration tests (snapshot → presentation, selection → order draft) + domain tests (template resolution, order math, versioning) + visual screenshot review.
@@ -145,7 +145,8 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 - [ ] Resource replacement updates display without redeploy; old IDs remain resolvable.
 - [ ] Prompt publish → subsequent AI executions record the new version; rollback restores prior version.
 - [ ] Template publish → presentation cache invalidated by version key; old snapshots still render.
-- [ ] Menu correction in studio creates a new snapshot version; diff vs previous visible.
+- [ ] Menu correction in studio materializes a candidate snapshot + (on approval) a new revision; diff vs current revision visible.
+- [ ] Rollback in studio moves the current pointer to a previous published revision (audited, no new revision).
 - [ ] AI Inspector reproduces an execution (prompt version, model, output, validation errors, latency/tokens).
 - [ ] Appearance change (e.g., primary color) applies without redeploy and without arbitrary CSS/JS.
 - [ ] Every admin mutation requires auth + authz + audit; unauthenticated mutation attempts rejected (test).
@@ -207,7 +208,7 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 - [ ] Receipt with discounts: discount/tax/combo separated; no flattened per-dish price.
 - [ ] Receipt images private; PII redacted before any wider use; no PII in logs.
 - [ ] Contribution state machine enforced (draft → submitted → pending → published/rejected/needs_more_info); publishing never leaks profile/preferences/order history.
-- [ ] Corrections create new versions; history preserved.
+- [ ] Corrections create new snapshots + new revisions; history preserved.
 
 **Validation:** Domain tests (price normalization, price stats incl. percentiles, contribution transitions) + AI fixture (receipt with discounts) + integration tests (contribution → moderation → publication, receipt → observation) + privacy checks (no PII in logs / public surfaces).
 

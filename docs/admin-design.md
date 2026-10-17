@@ -151,25 +151,26 @@ Manage: templates defining how interactive menu presentations are assembled (lay
 
 ### 4.4 Menu Management
 
-Manage: scanned menus, extracted items, corrections, version comparison, publication.
+Manage: scanned menus, extracted items, corrections, version comparison, publication (ADR 0006: snapshots are observations; revisions are what publish).
 
-**Entry:** Sidebar → Menus. **Primary view:** queue table (restaurant, submitted, source, confidence, status: pending / published / rejected, item count). Filters: status, restaurant, date, confidence band. Bulk actions: assign, approve (only for low-risk, high-confidence items if policy allows — default: individual review).
+**Entry:** Sidebar → Menus. **Primary view:** queue table (restaurant, submitted, source, confidence, coverage, status: pending_review / approved / rejected, item count). Filters: status, restaurant, date, confidence band, coverage. Bulk actions: assign, approve (only for low-risk, high-confidence items if policy allows — default: individual review).
 
 **Key actions:**
 
-- **Inspect:** Detail view: original image(s) (with zoom), extracted items grouped by category, per-item confidence, per-field uncertainty flags, extraction metadata (prompt version, model, latency, timestamps).
-- **Correct:** Inline edit of any extracted field (name, translation, price, category, size, modifier). Correcting a price requires a reason (dropdown + note). Corrections are versioned; original extraction preserved.
+- **Inspect:** Detail view: original image(s) (with zoom), extracted items grouped by category, per-item confidence, per-field uncertainty flags, coverage + coverage note, extraction metadata (prompt version, model, latency, timestamps).
+- **Correct:** Inline edit of any extracted field (name, translation, price, category, size, modifier). Correcting a price requires a reason (dropdown + note). Corrections are versioned; original extraction preserved. An operator correction materializes a candidate snapshot (current revision content + change list) — it never edits the observation in place.
 - **Dish mapping:** Map each menu item to a canonical dish (search + select) or mark "no canonical match" (creates a candidate for catalog review). Mapping affects discovery (dish pages link to this menu).
-- **Compare versions:** Side-by-side diff of two snapshots: added / removed / price-changed / modifier-changed items, with per-item before/after. Diff is the primary view for re-scans.
+- **Compare versions:** Side-by-side diff of a candidate snapshot vs the current published revision (`diffMenus`: added / removed / price-changed / modifier-changed items, with per-item before/after). Diff is the primary view for re-scans. Equivalence → approve as corroboration (no new revision).
 - **Review uncertainties:** Filter to low-confidence / missing-price / unmapped items; resolve each (confirm / correct / remove).
-- **Publish / reject:** Publish makes the menu available for traveler reuse; reject requires a reason (visible to submitter where applicable). Both are audited.
+- **Publish new revision / approve as corroboration / reject / needs-more-info:** Publishing a new revision makes the menu available for traveler reuse — create revision + move the `CurrentMenuRevision` pointer, one transaction, audited (the previous revision stays `published`, not superseded). Approving as corroboration records an equivalent scan as evidence without a new revision; reject requires a reason (visible to submitter where applicable). All are audited.
+- **Rollback:** Move the current pointer to an older `published` revision — one transaction, audited, no new revision, no status changes. **Withdraw:** set a revision's status to `superseded` (removes it from the published set); if it was current, the pointer moves in the same transaction.
 - **Render preview:** "Preview as traveler" opens the customer renderer with this menu + a selectable template, at mobile + desktop widths (same renderer, §2 principle 4).
 
 **Acceptance criteria:**
 
-- [ ] Operator can review + correct + publish a menu without leaving the detail view.
-- [ ] Diff view shows added / removed / price-changed items for re-scans.
-- [ ] Original extraction is never overwritten; corrections are new versions.
+- [ ] Operator can review + correct + publish a menu (new revision) without leaving the detail view.
+- [ ] Diff view shows added / removed / price-changed items for re-scans; equivalent re-scans offer "approve as corroboration".
+- [ ] Original extraction is never overwritten; corrections materialize a candidate snapshot + (on approval) a new revision.
 - [ ] Publish/reject requires reason where policy demands it; all actions audited.
 - [ ] Preview uses the real customer renderer.
 

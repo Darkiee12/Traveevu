@@ -173,9 +173,9 @@ User taps **Scan menu** (home, restaurant page, or map card) and points the came
 
 ### Steps
 
-1. **Capture.** Camera view with framing guidance ("Fit the full menu in frame"). One shutter button. Multi-page menus: "Add another page" loop. Retake affordance per page. File validation: image type/size limits enforced before upload.
-2. **Extract.** Progress state with honest copy ("Reading your menu…") — no fake percentage. The photo is sent to our backend and the AI provider for **private processing** (processing is not publication; disclosed before scanning — see `data-provenance.md` §5.2). AI extracts structured menu data: original names, translated names, descriptions, prices + currencies, categories, sizes, options, modifiers, quantity pricing, instructions. Original wording preserved.
-3. **Confirm.** Review screen lists extracted items grouped by category, each with original name + translation + price. Uncertain items are flagged ("Low confidence — check price") and editable inline. User corrects names/prices, removes hallucinated items, adds missing ones. **Confirming the extraction lets the traveler order — it does not publish or share anything.** Contributing the menu is a separate, explicit action (Journey 5).
+1. **Capture.** Camera view with framing guidance ("Fit the full menu in frame"). One shutter button. Multi-page menus: "Add another page" loop. Retake affordance per page. File validation: image type/size limits enforced before upload. Capture opens a private `MenuCaptureSession` (token-based for guests, no account — ADR 0006 §2.1/§2.5).
+2. **Extract.** Progress state with honest copy ("Reading your menu…") — no fake percentage. The photo is sent to our backend and the AI provider for **private processing** (processing is not publication; disclosed before scanning — see `data-provenance.md` §5.2). AI extracts structured menu data: original names, translated names, descriptions, prices + currencies, categories, sizes, options, modifiers, quantity pricing, instructions. Original wording preserved. Combined extraction preserves per-page references (`pageIndex`) and per-item confidence.
+3. **Confirm.** Review screen lists extracted items grouped by category, each with original name + translation + price. Uncertain items are flagged ("Low confidence — check price") and editable inline. User corrects names/prices, removes hallucinated items, adds missing ones. User states coverage if known ("This is the full menu" → `reported_complete`; "Drinks only" → `partial`; unstated → `unknown`). **Confirming the extraction materializes a private `MenuSnapshot` (draft) and lets the traveler order — it does not publish or share anything.** Contributing the menu is a separate, explicit action (Journey 5). The order draft pins the private snapshot via `menuRef` (ADR 0006 §2.9).
 4. **Interactive menu.** The confirmed menu renders as an interactive ordering UI (schema-driven; see `menu-rendering.md`): browse categories, read dish explanations, select items, choose sizes / documented modifiers, set quantities, add special requests. Estimated total updates live. Dietary warnings/uncertainties appear inline on affected items.
 5. **Review order.** Order review screen: selected items in user's preferred language + original names, quantities, modifiers, special requests, estimated total (when supported by menu data). Clear distinction: confirmed restaurant options vs. free-text requests ("Restaurant may not support this — ask staff").
 6. **Bilingual staff view.** One screen, two halves (or toggle): customer view (user's language) + staff view (restaurant's language: original dish/modifier names, quantities, special requests translated, estimated total). Large type, high contrast. Copy states plainly: "Show this to staff. This is a request, not a confirmed order." User shows phone to staff. No payment, no submission, no implication of acceptance.
@@ -197,7 +197,7 @@ Scan → confirm (1–2 corrections) → select 2 items with a size choice → b
 | Estimated total cannot be computed | Total area reads "Total unavailable — some prices missing" instead of a partial sum presented as final. |
 | User adds a free-text special request | Marked "Request — not a confirmed restaurant option" in both language views. |
 | Staff cannot read the screen (brightness / language) | Staff view uses large type; toggle to original-language-only; no reliance on color alone. |
-| Restaurant already has a trusted menu | User is offered "Use existing menu (verified [date])" vs. "Scan again". Re-scan compares against existing menu and surfaces changes (see Journey 5). |
+| Restaurant already has a trusted menu | User is offered "Use existing menu (observed [date], verified [date], [coverage])" vs. "Scan again". Re-scan compares against the current published revision and surfaces changes (see Journey 5). If a newer revision publishes while a draft is open, the UI offers an explicit, confirmed refresh — never a silent rebase (ADR 0006 §2.9). |
 
 ### 15–30s rule
 
@@ -226,10 +226,10 @@ User confirms a menu extraction (Journey 4, step 3) and is offered "Share this m
 ### Steps
 
 1. After confirmation, contribution prompt: what will be shared (extracted menu items, prices, restaurant identity, extraction timestamp, observed menu timestamp if known, source, confidence) and what will **not** be shared (profile, preferences, order selections, photos of receipts, identity, internal identifiers — public attribution is only a display label, "submitted by a traveler" for anonymous submissions). One-tap **Share** / **Keep private**. Note: the menu photo was already sent for private extraction (Journey 4, step 2); sharing applies to the extracted data, and the photo itself is never published without explicit moderation.
-2. Shared menu enters moderation: `pending` → `published` / `rejected` (with reason). Admin reviews original image, extracted items, uncertainties, and dish mappings (see `admin-design.md`).
-3. Versioning: a new observation for the same restaurant creates a new `MenuSnapshot` version; history is preserved. A re-scan is compared against the current published menu and changes are surfaced ("3 prices changed, 1 item added").
-4. Reuse: the next traveler opening that restaurant sees "Menu from [date], verified [status]" and uses it directly without scanning. Staleness is labeled.
-5. Corrections: any user can flag an item ("Wrong price", "No longer served", "Wrong translation") with an optional note. Corrections enter the same moderation queue and, once accepted, create a new version — never silently overwrite history.
+2. Shared menu enters moderation: `pending_review` → `approved` / `rejected` (with reason). Admin reviews original image, extracted items, uncertainties, coverage, and dish mappings (see `admin-design.md`). On approval, the moderator either **publishes a new revision** (referencing the approved snapshot) or **approves as corroboration** (equivalent scan — strengthens evidence, no new revision; ADR 0006 §2.6).
+3. Versioning: a new observation for the same restaurant creates a new `MenuSnapshot`; history is preserved. A re-scan is compared (`diffMenus`, ADR 0006 §2.6) against the current published revision's content and changes are surfaced ("3 prices changed, 1 item added"). Pending contributions never silently change the public menu.
+4. Reuse: the next traveler opening that restaurant sees "Menu observed [date], verified [date], [coverage]" and uses the current published revision directly without scanning. Staleness is labeled; coverage limitations are shown.
+5. Corrections: any user can flag an item ("Wrong price", "No longer served", "Wrong translation") with an optional note. Corrections enter the same moderation queue; on submit the system materializes a candidate snapshot (current revision content + change list, applied deterministically), and on acceptance a new revision is published — never silently overwrite history (ADR 0006 §5).
 6. Other contributions (price observations, food photos) follow the same pattern: submit → provenance recorded (source, timestamp, confidence) → moderation → publication. Receipt submissions keep raw images private by default. (Reviews follow the same pattern when Review ships; deferred from MVP.)
 
 ### Happy path
@@ -253,7 +253,7 @@ The Share / Keep-private choice is one screen, one tap each, with a plain-langua
 ### Acceptance criteria
 
 - [ ] Sharing is opt-in, per-menu, with an explicit list of what is / is not shared.
-- [ ] Menu changes create versions; history is never silently overwritten.
+- [ ] Menu changes create new snapshots + new revisions; history is never silently overwritten. Equivalent re-scans corroborate without creating a new revision.
 - [ ] Re-scan diff (added / removed / price-changed items) is shown before publication.
 - [ ] Private data (profile, order selections, receipt images) is never published with shared menus.
 - [ ] Every contribution carries provenance (source, timestamp, confidence, status) and an audit trail.
