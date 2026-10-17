@@ -30,8 +30,11 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 | `Ingredient` | **Value (JSONB inside `Dish`, validated)** | No `Ingredient` table in MVP (ADR 0004). `Dish.ingredients[]`: `{ name, normalizedId?, role, evidenceLevel, sourceRef? }`. `MenuItem` may carry its own evidence-backed `ingredients[]` |
 | `Allergen` | **Value (Effect Schema enum + per-dish status array)** | No `Allergen` table in MVP (ADR 0004). One centralized `AllergenCode` enum in `packages/contracts`; `Dish.allergenStatuses[]`: `{ allergen, status: present \| possibly_present \| confirmed_absent \| unknown, evidence?, sourceRef? }`. Never free-text in safety-critical paths |
 | `Restaurant` | **Table** | Identity, PostGIS location, attributes, moderation |
-| `MenuSnapshot` | **Table** | Versioned observation; one row per scan/version; immutable once stored (corrections = new row) |
-| `MenuItem` | **Table** (child of snapshot) | Restaurant-specific item within a snapshot; maps to `Dish` optionally (`dishId` nullable — unmapped stays unmapped, never forced) |
+| `MenuCaptureSession` | **Table** (private, ADR 0006) | One private scanning session: N ordered photos + combined AI extraction; token-based for guests; temp retention; at most one snapshot per session in MVP |
+| `MenuSnapshot` | **Table** | Immutable observation of captured menu content (possibly partial); never "published" — publication belongs to `PublishedMenuRevision`. Corrections materialize new snapshots; nothing overwrites |
+| `PublishedMenuRevision` | **Table** (ADR 0006) | The approved, reusable restaurant menu for (restaurant, scope): references ≥1 approved snapshots (MVP: exactly 1), `revisionNumber` monotonic per restaurant+scope. `published` = in the published set (may or may not be current); `superseded` = withdrawn. Current menu = pointer-selected revision (`CurrentMenuRevision`) |
+| `CurrentMenuRevision` | **Table** (pointer, ADR 0006 §2.11) | Explicit current-revision pointer per (restaurant, scope): `(restaurantId, scope)` → `revisionId`. Publish / rollback / withdraw move it transactionally; no pointer row = no current menu |
+| `MenuItem` | **Table** (child of snapshot) | Restaurant-specific item within a snapshot; maps to `Dish` optionally (`dishId` nullable — unmapped stays unmapped, never forced); `pageIndex?` = which photo/page it was extracted from |
 | `MenuItemOption` | **Value / JSONB inside MenuItem** | Sizes/modifiers/choices belonging to one item; no independent lifecycle. Validated array in JSONB |
 | `PriceObservation` | **Table** | Evidence row: source (listed vs receipt), amount, currency, time, place, confidence, provenance |
 | `UserPreference` | **Table** (user-scoped, private) | One row per user: `userId` (PK, FK → Better Auth `user.id`), `preferences` (validated JSONB — Effect Schema `UserPreferenceDoc`), `schemaVersion`, `revision` (optimistic concurrency), timestamps. Hybrid per ADR 0005 |
@@ -42,8 +45,8 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 | `Review` | **DEFERRED — future independent entity, NO table in MVP** | Dish or restaurant review; provenance + moderation; distinct from price/menu evidence. NOT a value object, NOT a JSONB array on `Dish`/`Restaurant`. Do not build the table during the initial scan-to-order MVP. See §4.14 |
 | `MenuTemplate` | **Table** | Template identity + metadata |
 | `MenuTemplateVersion` | **Table** (JSONB payload, immutable) | Versioned template config; published versions immutable |
-| `MenuPresentation` | **Derived / cacheable, NOT a primary table** | Built from (snapshot + template) via validated transform; may be cached with versioned key; never the source of truth |
-| `OrderDraft` | **Table** (user-private) | Draft selections; user-scoped; expires/deletable; never merged into shared snapshot |
+| `MenuPresentation` | **Derived / cacheable, NOT a primary table** | Built from (published revision *or* private snapshot + template) via validated transform; shared cache key `(publishedRevisionId, templateVersion, locale)` / private key `(snapshotId, templateVersion, locale)`; never the source of truth |
+| `OrderDraft` | **Table** (user-private) | Draft selections; pins `menuRef` (published revision *or* private snapshot), never floats; never merged into shared content |
 | `PromptDefinition` | **Table** | Prompt identity + metadata |
 | `PromptVersion` | **Table** (JSONB payload, immutable) | Versioned prompt + model + params + schemas; published versions immutable |
 | `AIExecution` | **Table** (append-only log) | One row per AI call: promptVersion, model, latency, tokens/cost, validation errors, input refs (no PII) |
@@ -66,22 +69,31 @@ Dish 1──* Review (dish reviews — DEFERRED, future entity, no table in MVP;
 Dish 1──* UserPreference.tasteAnchors (dish-kind entries inside the preference doc, NOT a join table — ADR 0005; no FK, validated on write, normalized on dish merge)
 User 1──* PreferenceConflict (owned by the authenticated account — ADR 0005 §3)
 
-Restaurant 1──* MenuSnapshot (versioned, append-only)
+Restaurant 1──* MenuCaptureSession (private scanning sessions)
+MenuCaptureSession 1──0..1 MenuSnapshot (at most one snapshot per session in MVP)
+Restaurant 1──* MenuSnapshot (versioned, append-only observations)
 MenuSnapshot 1──* MenuItem
 MenuItem *──* MenuItemOption (JSONB value inside MenuItem)
 MenuItem *──1 Dish (nullable FK: mapped dish, or NULL = unmapped)
 MenuItem.variantLabel — nullable variant label (e.g. "sườn nướng"); NO DishVariant table in MVP (ADR 0002)
+MenuItem.pageIndex — nullable; which photo/page the item was extracted from (ADR 0006)
 MenuItem 1──* PriceObservation (listed-price evidence)
 Restaurant 1──* PriceObservation
 Restaurant 1──* Review (restaurant reviews — DEFERRED, future entity, no table in MVP; see §4.14)
+Restaurant 1──* PublishedMenuRevision (history preserved; multiple may be `published`, `superseded` = withdrawn)
+Restaurant 1──1 CurrentMenuRevision (exactly one current pointer per (restaurant, scope), or none)
+CurrentMenuRevision ──> PublishedMenuRevision (pointer target = current menu)
+PublishedMenuRevision *──* MenuSnapshot (source snapshots, ≥1; MVP: exactly 1)
+MenuSnapshot ──> PublishedMenuRevision (corroboratesRevisionId, nullable — approved-as-corroboration)
 
 User 1──1 UserPreference
 User 1──* OrderDraft
-OrderDraft 1──* OrderDraftLine (value/child: snapshot item ref + options + qty + note)
-OrderDraft ──> MenuSnapshot (references a specific snapshotVersion; never floats)
+OrderDraft 1──* OrderDraftLine (value/child: item ref + options + qty + note)
+OrderDraft ──> PublishedMenuRevision | MenuSnapshot (via menuRef discriminated union; never floats)
 
 Contribution 1──1 <subject>   (polymorphic by type: menu_scan | correction | price_report | photo; `review` joins only when Review ships — deferred)
 Contribution ──> MenuSnapshot / PriceObservation / MediaAsset (as applicable; `Review` target when Review ships — deferred)
+Contribution (correction) ──> PublishedMenuRevision (targetRevisionId — the revision being corrected)
 
 MenuTemplate 1──* MenuTemplateVersion
 PromptDefinition 1──* PromptVersion
@@ -188,11 +200,15 @@ recipe) and, where evidenced, by `MenuItem` (this serving):
 - `id`, `name` (original), `translatedName` (locale map), `location` (PostGIS `geography(Point, 4326)`), `address` (structured + free-text), `attributes` (validated JSONB: seating, cash-only, halal… — each attribute provenance-tagged), `status` (`draft | published | closed | duplicate`), `source`.
 - **Invariant:** Restaurant identity is deduplicated by (name + location proximity + address) with human review for near-duplicates. Never auto-merge on name alone.
 
-### 4.6 `MenuSnapshot` (observation, versioned, immutable)
+### 4.6 `MenuSnapshot` (immutable observation, possibly partial) — ADR 0006
 
-One row per menu observation. **Corrections and re-scans create new rows; nothing overwrites.**
+One row per menu observation. **Corrections and re-scans create new rows; nothing overwrites.** A snapshot is an observation of
+captured content — **not** necessarily an entire restaurant menu,
+and **never** "published". Publication belongs to
+`PublishedMenuRevision` (§4.22). The old rule "current menu =
+latest `published` snapshot" is retired (ADR 0006 §6).
 
-**Corrections, practically (review amendment 2026-10-16 — locked):**
+**Corrections, practically (review amendment 2026-10-16 — locked, mechanics updated by ADR 0006 §5):**
 OCR/extraction mistakes are expected, so correction must be a
 first-class, low-friction path — not "append-only means unfixable":
 
@@ -202,12 +218,18 @@ first-class, low-friction path — not "append-only means unfixable":
 - A **correction is a `Contribution` of type `correction`** that
   carries a field-level change list: `{ field, oldValue, newValue,
   reason, actor, at }` (e.g. `items[2].price: 85000 → 65000`,
-  reason `OCR misread 6 as 8`). No free-form "fixed the menu".
-- Applying a correction creates a **new `MenuSnapshot` version**
-  (`supersedesId` → previous) whose extraction payload is the corrected
-  one. The UI (admin + traveler confirm screen) shows original vs
-  corrected side by side, and history shows every version + its
-  correction reason. Nothing is silently overwritten.
+  reason `OCR misread 6 as 8`) **against the current published
+  revision** (`targetRevisionId`). No free-form "fixed the menu".
+- On **submit**, the system materializes a **candidate snapshot**:
+  a copy of the current revision's content with the validated
+  change list applied deterministically (no AI), `source:
+  correction`, `provenance: { baseSnapshotIds,
+  correctionContributionId }`, `status: pending_review`. On
+  approval, a new `PublishedMenuRevision` references it; on
+  rejection it stays `rejected` (history preserved). The UI
+  (admin + traveler confirm screen) shows original vs corrected
+  side by side, and history shows every version + its correction
+  reason. Nothing is silently overwritten.
 - **Per-field provenance, not just per-snapshot.** Each corrected /
   confirmed field carries its own evidence level: `ai_extracted`
   (observed, with confidence + prompt version) → `user_confirmed`
@@ -226,13 +248,14 @@ first-class, low-friction path — not "append-only means unfixable":
   requires moderator review — it is never auto-published from a
   single user correction. See `data-provenance.md` §4.
 
-- `id`, `restaurantId`, `snapshotVersion` (monotonic per restaurant), `capturedAt` (extraction time), `observedMenuAt` (menu's own date, if visible; nullable), `source` (`scan | contribution | manual`), `imageRef` (private `MediaAsset` id — scan images are processed privately server-side with temporary storage + retention limits; see `data-provenance.md` §5.2), `extraction` (validated JSONB payload: items, categories, prices, options, uncertainties), `extractionConfidence` (overall + per-item), `status` (`draft | pending_review | published | rejected | superseded`), `supersedesId` (nullable), `createdBy` (user id, private).
-- **Invariant:** Published snapshots are immutable. A correction creates a new snapshot with `supersedesId` → previous. The "current menu" for a restaurant = latest `published` snapshot, resolved deterministically. History is always queryable.
+- `id`, `restaurantId` (nullable until identified), `scope` (`MenuScope`, default `main`), `snapshotVersion` (monotonic per restaurant; assigned once `restaurantId` is known), `sessionId` (nullable; null for correction-materialized / manual), `source` (`session_scan | correction | manual`), `imageRefs` (ordered `MediaAsset` ids — scan images are processed privately server-side with temporary storage + retention limits; see `data-provenance.md` §5.2), `extraction` (validated JSONB payload: items, categories, prices, options, uncertainties), `extractionConfidence` (overall + per-item), `coverage` (`MenuCoverage`), `coverageNote?`, `provenance` (`{ baseSnapshotIds[], correctionContributionId? }` — empty base for scans), `status` (`draft | pending_review | approved | rejected` — never `published`, never `superseded`; ADR 0006), `corroboratesRevisionId` (nullable — set when approved as corroboration, ADR 0006 §2.6), `capturedAt` (extraction time), `observedMenuAt` (menu's own date, if visible; nullable), `createdBy` (user id, private, nullable for guest-token sessions — guest snapshots link via `sessionId`), `createdAt`.
+- **Invariant:** The snapshot **evidence payload** (`extraction`, `imageRefs`, `provenance`, `capturedAt` / `observedMenuAt`, `sessionId`, `source`, `snapshotVersion`) is immutable — never rewritten, including by corrections, which create new evidence-bearing snapshots. Workflow fields (`status`, `corroboratesRevisionId`, `restaurantId` set-once, `coverage`/`coverageNote`) change only through audited, authorized transitions (ADR 0006 §2.2). The "current menu" for a restaurant + scope = pointer-selected current **revision** (§4.23, ADR 0006 §2.8/§2.11). History is always queryable.
 - **Invariant:** `MenuSnapshot` never contains user preferences, order drafts, or user-specific pricing. It is shared evidence.
+- **Invariant:** A draft (private) snapshot is retained while its session is live or an active `OrderDraft` references it; otherwise it follows session retention (ADR 0006 §2.2).
 
 ### 4.7 `MenuItem` (restaurant-specific)
 
-- `id`, `snapshotId`, `originalName` (verbatim from menu — preserved), `translatedName` (locale map), `description` (verbatim or extracted; `null` if absent — never invented), `category`, `variantLabel` (nullable validated string, e.g. `sườn nướng`, from menu evidence, never invented; `null` = no variant stated — ADR 0002), `price` (nullable `Money` — integer minor units, see §7 Q2; missing price stays `null`), `currencyCode`, `sizeVariants` / `options` (see `MenuItemOption`), `dishId` (nullable mapping to canonical `Dish`), `mappingConfidence`, `ingredients[]` (optional, evidence-backed `IngredientValue`s from the menu — ADR 0004; absent = no menu-level evidence, fall back to Dish-level typical with uncertainty), `allergenStatuses[]` (optional, evidence-backed `AllergenStatus` values from the menu — ADR 0004; take precedence for this serving when present), `uncertainties` (array: e.g., `price_unclear`, `ingredients_unknown`, `cross_contact_unknown`), `sortOrder`.
+- `id`, `snapshotId`, `originalName` (verbatim from menu — preserved), `translatedName` (locale map), `description` (verbatim or extracted; `null` if absent — never invented), `category`, `variantLabel` (nullable validated string, e.g. `sườn nướng`, from menu evidence, never invented; `null` = no variant stated — ADR 0002), `price` (nullable `Money` — integer minor units, see §7 Q2; missing price stays `null`), `currencyCode`, `sizeVariants` / `options` (see `MenuItemOption`), `dishId` (nullable mapping to canonical `Dish`), `mappingConfidence`, `ingredients[]` (optional, evidence-backed `IngredientValue`s from the menu — ADR 0004; absent = no menu-level evidence, fall back to Dish-level typical with uncertainty), `allergenStatuses[]` (optional, evidence-backed `AllergenStatus` values from the menu — ADR 0004; take precedence for this serving when present), `uncertainties` (array: e.g., `price_unclear`, `ingredients_unknown`, `cross_contact_unknown`), `sortOrder`, `pageIndex?` (nullable — which photo/page of the capture session this item was extracted from; ADR 0006 §2.5).
 - **Invariant:** `originalName` is never overwritten by translation or normalization. Display always shows original alongside translation.
 - **Invariant:** Price `null` ≠ price 0. Missing price is displayed as unknown.
 
@@ -362,6 +385,13 @@ TasteAnchor =
 
 State machine wrapping any user-submitted data (menu scan, correction, price report, photo — `review` joins as a subject type only when Review ships; Review is deferred, see §4.14).
 
+**Subjects (ADR 0006):** `menu_scan` → `MenuSnapshot` (candidate,
+`pending_review`, created from the session extraction at submit).
+`correction` → `MenuSnapshot` (candidate materialized at submit
+from the current revision + change list — §4.6) **plus**
+`targetRevisionId` (the revision being corrected). `price_report`
+→ `PriceObservation`.
+
 - `id`, `ownerUserId` (private, **nullable FK, `ON DELETE SET NULL`,
   never `CASCADE`** — ADR 0003), `attribution` (immutable snapshot,
   validated JSONB: `originalUserId` as a value, not an FK,
@@ -414,14 +444,23 @@ Reserved future shape (not implemented in the MVP):
 
 ### 4.16 `MenuPresentation` (derived)
 
-- **Not a primary table.** Built by: `buildPresentation(snapshot, templateVersion) → validated MenuPresentation`.
-- May be cached with key `(restaurantId, snapshotVersion, templateVersion)`; cache invalidated on new snapshot or new template publish. Rebuilding is pure + deterministic — same inputs always yield the same presentation.
-- Never edited directly. Edits go to the snapshot (new version) or the template (new version), then rebuild.
+- **Not a primary table.** Built by: `buildPresentation(menuSource, templateVersion) → validated MenuPresentation`, where `menuSource = PublishedMenuRevision | MenuSnapshot` (ADR 0006). Carries `menuRef` (revision id *or* snapshot id) + `sourceKind`, `coverage`, `coverageNote?`, `observedAt?`, `publishedAt?` for UI display.
+- May be cached with shared key `(publishedRevisionId, templateVersion, locale)` or private key `(snapshotId, templateVersion, locale)`; cache invalidated on new published revision or new template publish. Corroboration does **not** invalidate (same revision id). Rebuilding is pure + deterministic — same inputs always yield the same presentation.
+- The presentation embeds user-independent item-level evidence (cacheable); the per-user dietary warning is a separate overlay computed from `UserPreference` + presentation evidence, never stored in the shared cached presentation (ADR 0006 §2.10).
+- Never edited directly. Edits go to the snapshot (new snapshot) / revision (new revision) or the template (new version), then rebuild.
 
 ### 4.17 `OrderDraft` (user-private)
 
-- `id`, `userId`, `snapshotId` + `snapshotVersion` (pinned — the draft references a specific menu version, never floats), `lines[]` (each: `menuItemId`, `selectedOptions[]` (option + choice ids), `quantity`, `specialRequest` (free text, marked unconfirmed), `lineTotal` (deterministic)), `estimatedTotal` (deterministic sum; `null` if any line price unknown), `dietaryWarnings[]` (computed deterministically from known ingredients + uncertainty flags), `status` (`draft | confirmed_for_display | abandoned`), `createdAt`, `updatedAt`.
-- **Invariants:** Draft is private to the user. It never merges into the shared snapshot. Free-text requests are visually distinguished from confirmed options. Estimated total is clearly labeled estimated. The bilingual view is generated from the draft + snapshot originals — never from LLM recollection.
+- `id`, `userId`, `menuRef` (pinned — the draft references an immutable published revision *or* the customer's private extraction result, never floats):
+
+```ts
+OrderDraft.menuRef =
+  | { kind: OrderDraftMenuRefKind.PublishedRevision, revisionId: PublishedMenuRevisionId }
+  | { kind: OrderDraftMenuRefKind.PrivateSnapshot, snapshotId: MenuSnapshotId }
+```
+
+  `lines[]` (each: `menuItemId`, `selectedOptions[]` (option + choice ids), `quantity`, `specialRequest` (free text, marked unconfirmed), `lineTotal` (deterministic)), `estimatedTotal` (deterministic sum; `null` if any line price unknown), `dietaryWarnings[]` (computed deterministically from known ingredients + uncertainty flags), `status` (`draft | confirmed_for_display | abandoned`), `createdAt`, `updatedAt`.
+- **Invariants:** Draft is private to the user. It never merges into shared content. Free-text requests are visually distinguished from confirmed options. Estimated total is clearly labeled estimated. The bilingual view is generated from the draft + pinned source originals — never from LLM recollection. **Never silently rebase:** when a newer revision publishes while a draft is open, the UI offers an explicit, confirmed refresh (re-pin + line re-validation, diff shown first — ADR 0006 §2.9). A draft pinning a private snapshot keeps that snapshot retained until the draft is abandoned / deleted / expires.
 
 ### 4.18 `PromptDefinition` / `PromptVersion`
 
@@ -459,6 +498,79 @@ survives anonymous-account deletion.
   Multiple pending conflicts allowed as separate rows, each
   resolving independently.
 
+### 4.21 `MenuCaptureSession` (private) — ADR 0006 §2.1
+
+One private scanning session. No account or contribution
+required; guest sessions are keyed by an ephemeral
+`sessionToken`, not a user id (ADR 0003: scanning never mints
+an anonymous identity).
+
+- `id`, `sessionToken` (unguessable; guest access),
+  `ownerUserId` (nullable; set when the scanner is signed in
+  or an anonymous identity is minted), `restaurantId`
+  (nullable until identified), `scope` (`MenuScope`, default
+  `main`), `status` (`active | submitted | expired`),
+  `photos` (ordered `[{ mediaAssetId, pageIndex }]`,
+  validated JSONB), `extraction` (validated `MenuExtraction`
+  JSONB, nullable until complete), `extractionStatus`
+  (`pending | complete | failed`), `extractionConfidence`
+  (overall + per-item, nullable), `coverage`
+  (`MenuCoverage`, default `unknown`), `coverageNote?`,
+  `createdAt`, `updatedAt`, `expiresAt` (retention).
+- **Invariants:** one session produces at most one snapshot
+  (MVP). Re-photographing a page creates new evidence, never
+  a mutation. Session + unsubmitted photos are deleted after
+  the retention window (default 24h, ADR 0003) with the
+  deletion recorded; a confirmed snapshot referenced by a
+  draft survives per §4.6.
+
+### 4.22 `PublishedMenuRevision` (the reusable public menu) — ADR 0006 §2.3
+
+The approved, reusable restaurant menu for (restaurant,
+scope). Publication is a distinct act, not a property of an
+observation.
+
+- `id`, `restaurantId` (`NOT NULL`), `scope` (`MenuScope`),
+  `revisionNumber` (monotonic per restaurant + scope),
+  `sourceSnapshotIds` (`SnapshotId[]`, ≥ 1, ordered; MVP:
+  exactly 1), `coverage` (`MenuCoverage`), `coverageNote?`,
+  `status` (`published | superseded`),
+  `supersedesRevisionId` (nullable), `publishedAt`,
+  `publishedBy` (moderator id, private), `createdAt`.
+- **Invariants:** `published` = in the published set,
+  eligible to be current — **not** necessarily the currently
+  selected revision. `superseded` = withdrawn from the
+  published set. Publishing a new revision does **not**
+  supersede the old one; it moves the pointer (§4.23).
+  `supersedesRevisionId` is lineage only. `resolveCurrentMenu(restaurantId,
+  scope)` returns the pointer-selected revision, or none
+  (no pointer row = no current menu, even if published
+  revisions exist). Public surfaces use revisions only.
+  Display shows observation date (source snapshot
+  `observedMenuAt` / `capturedAt`) + verification date
+  (`publishedAt`) + coverage — never a guarantee of live
+  restaurant availability. Any revision (current,
+  non-current `published`, or `superseded`) stays renderable
+  for pinned order drafts.
+
+### 4.23 `CurrentMenuRevision` (pointer) — ADR 0006 §2.11
+
+Explicit current-revision pointer per (restaurant, scope).
+
+- `restaurantId`, `scope` (composite PK), `revisionId`
+  (FK → `PublishedMenuRevision`), `updatedAt`, `updatedBy`
+  (moderator id, private).
+- **Invariants:** publish = create revision + move pointer,
+  one transaction, audited. Rollback = move pointer to an
+  older `published` revision, one transaction, audited — no
+  new revision, no status changes. Withdraw = status →
+  `superseded`, one transaction, audited; if the withdrawn
+  revision was current, the pointer moves in the same
+  transaction. Pointer updates serialize via the pointer row
+  per (restaurant, scope) — concurrent publishes both create
+  revisions; the later-committing pointer move wins; nothing
+  is overwritten. No pointer row = no current menu.
+
 ## 5. The four distinctions that matter most
 
 ### 5.1 Dish vs MenuItem
@@ -472,11 +584,27 @@ survives anonymous-account deletion.
 
 A restaurant may sell multiple variants of one dish → multiple `MenuItem`s mapping to one `Dish`, distinguished by `MenuItem.variantLabel`. Never create a new `Dish` per menu-item spelling, and never create a `DishVariant` row (ADR 0002).
 
-### 5.2 MenuSnapshot vs Current Menu
+### 5.2 Observation vs Publication vs Current Menu (ADR 0006)
 
-- `MenuSnapshot` = observation at a time. Append-only, immutable once stored.
-- "Current menu" = latest `published` snapshot for a restaurant, resolved deterministically. It is a *view*, not a row that gets overwritten.
-- A new scan creates a new snapshot; comparison with the previous snapshot can detect changes (added/removed/price-changed items) — surfaced to moderators and, where useful, to users ("menu may have changed").
+- `MenuCaptureSession` = private scanning. `MenuSnapshot` =
+  observation at a time (possibly partial). Append-only,
+  immutable once stored. `PublishedMenuRevision` = the
+  approved, reusable public menu.
+- "Current menu" = pointer-selected current **revision**
+  for a (restaurant, scope) (`CurrentMenuRevision` §4.23),
+  resolved via `resolveCurrentMenu(restaurantId, scope)`.
+  It is *not* the latest snapshot, nor the latest published
+  revision by number — pending contributions never silently
+  change public content.
+- A new scan creates a new snapshot; normalized comparison
+  (`diffMenus`, ADR 0006 §2.6) against the current revision's
+  content detects equivalence (→ corroboration, no new
+  revision) or meaningful changes (→ moderation). Changes are
+  surfaced to moderators and, where useful, to users ("menu
+  may have changed").
+- Public surfaces (discovery, dish pages, price context) use
+  published revisions only. Approved-but-unpublished snapshots
+  are evidence, not public content.
 
 ### 5.3 PriceObservation: listed vs receipt-paid
 
@@ -516,14 +644,14 @@ AI-extracted information carries confidence + provenance. LLM-generated descript
 
 ## 6. Key invariants (checklist for reviewers)
 
-1. Snapshots are append-only; corrections = new versions.
+1. Snapshots are append-only; corrections = new snapshots + new revisions (ADR 0006).
 2. Prices are integer minor units (`amountMinor`, `BIGINT`) + currency + timestamp; `null` ≠ 0. Never float, never `numeric`.
 3. Listed vs receipt-paid observations are distinct kinds.
 4. Price stats are deterministic (median/percentiles), never LLM-computed.
 5. Original text is never overwritten by translation.
 6. MenuItem → Dish mapping is nullable; unmapped stays unmapped.
-7. OrderDraft references a pinned snapshot version; never floats.
-8. OrderDraft / UserPreference never enter shared snapshots.
+7. OrderDraft references a pinned `menuRef` (published revision *or* private snapshot); never floats.
+8. OrderDraft / UserPreference never enter shared content.
 9. Options offered = options in evidence. No invented modifiers.
 10. Dietary safety: absence of mention ≠ safe. Evidence levels (`known / common / confirmed / unknown`) are always distinguished.
 11. Published prompt/template versions are immutable.

@@ -19,8 +19,8 @@ completely — scan → interactive menu → bilingual order, verified on a
 real printed menu + Playwright mobile journey — before P2 work starts.
 P2 (reuse) is next because it demonstrates the crowdsourced-data
 concept: a second traveler opens the same restaurant and uses the
-latest published snapshot without re-scanning, with an optional
-re-scan diff. P3 discovery does not start until the P1+P2 gate passes.
+current published revision without re-scanning, with an optional
+re-scan diff (ADR 0006). P3 discovery does not start until the P1+P2 gate passes.
 Do not start P3/P4 to "make progress" while P1 is unverified.
 
 ## 2. P1 — Primary Vertical Slice (must be demoable end-to-end)
@@ -99,7 +99,7 @@ Do not start P3/P4 to "make progress" while P1 is unverified.
 
 ### In scope
 
-- [ ] Onboarding (Journey 1): language, origin (optional), ≤ 5 favorite dishes, dietary/allergy/religious (explicit only), spice/budget/adventurousness — all skippable, editable later.
+- [ ] Onboarding (Journey 1): language, origin (optional), ≤ 5 taste-anchor dishes, dietary/allergy/religious (explicit only), spice/budget/adventurousness — all skippable, editable later.
 - [ ] Preferences influence ranking (explicit preferences > demographic signals; origin never infers religion/diet).
 - [ ] Dish-level price context: observed price vs. nearby typical range (median + percentile band) **where evidence suffices**; otherwise "insufficient evidence".
 - [ ] Staleness labeling on price observations.
@@ -107,7 +107,7 @@ Do not start P3/P4 to "make progress" while P1 is unverified.
 ### Acceptance criteria
 
 - [ ] Onboarding completable/skippable in ≤ 90s.
-- [ ] Two users with different favorite dishes see measurably different ordering for the same query (spot-check, not a full recommender eval).
+- [ ] Two users with different taste anchors see measurably different ordering for the same query (spot-check, not a full recommender eval).
 - [ ] No price average is presented as fact without a stated sample / evidence state.
 
 ### Cut from P4 (defer)

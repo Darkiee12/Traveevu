@@ -197,6 +197,13 @@ authoritative, this table is the index):**
 | `OrderDraftStatus` | `draft`, `confirmed_for_display`, `abandoned` | domain-model §4.17 |
 | `PreferenceConflictStatus` / `PreferenceConflictResolution` | `pending`, `resolved` / `keep_account`, `keep_guest`, `discarded_expired` | ADR 0005 §3 |
 | `CurrencyCode` | `VND`, `USD`, … | Money section above. **Supersedes:** the Money section's "validated `Schema.Literal` union" description — `CurrencyCode` becomes a string enum under this convention. |
+| `MenuCaptureSessionStatus` | `active`, `submitted`, `expired` | ADR 0006 §2.1 |
+| `MenuSnapshotStatus` | `draft`, `pending_review`, `approved`, `rejected` | ADR 0006 §2.2. **Breaking change:** loses `published` + `superseded` — publication belongs to `PublishedMenuRevision`. |
+| `PublishedMenuRevisionStatus` | `published`, `superseded` | ADR 0006 §2.3. `published` = in the published set (may or may not be current — currentness is the `CurrentMenuRevision` pointer); `superseded` = withdrawn from the published set. Publishing a newer revision does NOT supersede the old one. |
+| `MenuCoverage` | `unknown`, `partial`, `reported_complete` | ADR 0006 §2.4. `reported_complete` is a contributor assertion, not verification. |
+| `MenuScope` | `main` (MVP value; extensible) | ADR 0006 §2.5. Current-menu key is (restaurant, scope). |
+| `OrderDraftMenuRefKind` | `published_revision`, `private_snapshot` | ADR 0006 §2.9. Discriminator for `OrderDraft.menuRef` / `MenuPresentation.menuRef`. |
+| `MenuSnapshotSource` | `session_scan`, `correction`, `manual` | ADR 0006 §2.2. Replaces old `scan \| contribution \| manual`. |
 
 **Rules for new vocabulary:** any new domain status,
 discriminator, or fixed value set follows this convention —
