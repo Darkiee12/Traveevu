@@ -76,7 +76,7 @@ trust in the submitter.
 | Menu scan (`menu_scan`) | Yes | `pending_review` → manual moderator approval. Never auto-published. |
 | Correction (`correction`) | Yes | `pending_review` → manual moderator approval. Never auto-published. Allergen corrections always need moderator review. |
 | Price report (`price_report`) | Yes | `pending_review` → manual moderator approval. Manual prices are never receipt-backed (see §3). |
-| Review (`review`) | **No** — Google sign-in required | Moderated; opinions, never dietary/price evidence. |
+| Review (`review`) | **No** — Google sign-in required (when Review ships; deferred from MVP — `domain-model.md` §4.14) | Moderated; opinions, never dietary/price evidence. |
 | Persistent contributor profile (public history, attribution page) | **No** — Google sign-in required | N/A |
 
 "Anonymous" means **no account**, not **no identity**: submissions
