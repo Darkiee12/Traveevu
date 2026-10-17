@@ -40,7 +40,10 @@ repos/           READ-ONLY vendored library source (see below)
 
 - **Contracts:** `packages/contracts` owns every API, AI-task, menu,
   presentation, and order schema. Effect Schema only — no duplicate Zod
-  schemas. See `docs/development/typescript.md`.
+  schemas. Domain discriminators, statuses, and fixed vocabularies are
+  string-valued TS enums (never inline string-literal unions for domain
+  vocab) — see `docs/development/typescript.md`, "String enums for
+  domain vocabularies".
 - **Backend:** Effect 4. Domain-oriented modules in `apps/api/src/domains/`.
   See `docs/development/effect.md`.
 - **Frontends:** TanStack Start + Router + Query + Form, Tailwind +
@@ -84,7 +87,7 @@ claim a check passed without running it.
 | Frontend conventions | `docs/development/frontend.md` |
 | Architecture / domain / AI boundaries / menu rendering / provenance / design | `docs/architecture.md`, `docs/domain-model.md`, `docs/ai-boundaries.md`, `docs/menu-rendering.md`, `docs/data-provenance.md`, `docs/customer-design.md`, `docs/admin-design.md` |
 | Decisions | `docs/decisions/*.md` (one ADR per significant decision) |
-| Milestones | `docs/milestones/M0…M7.md` |
+| Milestones | `docs/roadmap.md` (M0–M6; authoritative) → `docs/milestones/M0…M6.md` (to be written at `PLANNING` close-out) |
 
 ## Quality checks (required before any work is accepted)
 
@@ -150,9 +153,15 @@ claim a check passed without running it.
 - **Authorization on every admin mutation.** Authenticated + authorized
   + audited. No admin route ships without an authz check.
 - **Auth = Better Auth + Google only (ADR 0001, amended by ADR
-  0003).** One instance in the Effect backend; frontends are
-  clients. Guest-first customer; sign-in at save moments and for
-  reviews / persistent contributor profiles. Anonymous guests may
+  0003, ADR 0005).** One instance in the Effect backend; frontends are
+  clients. Guest-first customer; an explicit guest save persists
+  preferences under the guest's anonymous identity, sign-in
+  enables cross-device persistence; sign-in also required for
+  reviews / persistent contributor profiles. On claim: transfer
+  when the target has no preferences; when both exist, persist
+  the incoming document first into `PreferenceConflict` (owned
+  by the account), retain both + lazy atomic resolution — never
+  silently overwrite. Anonymous guests may
   *submit* menu scans, corrections, and price reports — all enter
   `pending_review`, never auto-published, MVP manual approval.
   Scan and submit are separate actions: scanning needs no account

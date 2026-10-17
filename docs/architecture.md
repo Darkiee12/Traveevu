@@ -124,7 +124,7 @@ In Effect 4.0.0, packages are consolidated into a single `effect` package; all `
 | Catalog | Dish, DishAlias, dish matching (variants live on `MenuItem.variantLabel`, no `DishVariant` table — ADR 0002; ingredients/allergens are validated values on `Dish`/`MenuItem`, no reference tables — ADR 0004) |
 | Restaurants | Restaurant identity, location (PostGIS), attributes |
 | Discovery | Search intent → ranked dishes/restaurants (deterministic ranking) |
-| Personalization | UserPreference, FavoriteDish, recommendation inputs (explicit > demographic) |
+| Personalization | UserPreference (incl. `tasteAnchors`, ADR 0005), recommendation inputs (explicit > demographic) |
 | Menus | MenuSnapshot, MenuItem, MenuItemOption, extraction persistence, versioning |
 | Ordering | OrderDraft, bilingual order view generation |
 | Pricing | PriceObservation, price stats (median/percentiles), evidence rules |

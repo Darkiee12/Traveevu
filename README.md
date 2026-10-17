@@ -87,9 +87,25 @@ maintenance, or centrally curated ingredient→allergen relationships), `Review`
 target, timestamps, moderation state, and lifecycle; NOT a value object, no table
 now, never a JSONB array on `Dish`/`Restaurant`; no placeholder ratings/stats
 without real data — see `domain-model.md` §4.14),
-`FavoriteDish` (a preference value on the user profile, not a join-heavy
-entity yet). `UserPreference` is a single versioned profile document per
-user (JSONB under a schema), not a normalized preference graph.
+`UserPreference` is one table per user (ADR 0005, hybrid): `userId`
+(PK, FK → Better Auth `user.id`), `preferences` (validated JSONB —
+Effect Schema `UserPreferenceDoc`), `schemaVersion` (document
+format, not edit history), `revision` (optimistic concurrency),
+timestamps. Taste anchors live inside the document as one ordered
+discriminated collection `preferences.tasteAnchors` (`TasteAnchor`,
+max 5 total: `{ kind: dish, dishId } | { kind: unmatched, label }`;
+only `dish` entries are verified catalog references; AI may
+suggest resolutions for `unmatched` labels, never silently
+convert them) — there is **no** `FavoriteDish` table in the MVP.
+Future arbitrary bookmarking is a separate model. Guest
+preferences stay client-side until explicitly saved; an explicit
+guest save may mint an anonymous identity + persist the document;
+Google sign-in enables cross-device persistence. On claim:
+transfer when the target account has no preferences; when both
+exist, persist the incoming document first into
+`PreferenceConflict` (owned by the account), retain both + lazy
+atomic resolution — never silently overwrite (guest-wins
+rejected).
 
 ### 3. Which parts genuinely require AI, and which should be deterministic?
 
@@ -313,7 +329,7 @@ mechanisms, in order of strength:
 
 Order by **demo-critical path first, with contracts before code**:
 
-1. **M0 — Skeleton + contracts.** Monorepo, tooling, CI checks,
+1. **M0 — Contracts, PoCs, skeleton.** Monorepo, tooling, CI checks,
    `packages/contracts` for menu snapshot / presentation / order draft.
    *Exit:* `bun install && turbo run check` green; contract package
    compiles; no app code yet.
@@ -321,32 +337,37 @@ Order by **demo-critical path first, with contracts before code**:
    AI extraction (one task, one prompt version) → schema validation →
    snapshot persistence → admin review screen (list + correct + publish).
    *Exit:* a real menu photo becomes a validated, publishable snapshot.
-3. **M2 — Schema-driven renderer + interactive menu.** Template
-   registry (one template), presentation derivation, quantity /
-   choice / note controls, dietary annotations, estimated total.
-   *Exit:* published snapshot renders as an interactive menu on mobile.
-4. **M3 — Bilingual order view.** OrderDraft → bilingual staff page
-   (user locale + Vietnamese originals), clearly a communication aid.
+3. **M2 — Interactive renderer + bilingual order + persistence/reuse.**
+   Template registry (one template), presentation derivation,
+   quantity / choice / note controls, dietary annotations, estimated
+   total, OrderDraft → bilingual staff page (user locale + Vietnamese
+   originals), persistence + reuse of published snapshots.
    *Exit:* end-to-end demo works on a phone: scan → confirm → select →
-   show staff. **This is the demo gate — protect it.**
-5. **M4 — Menu reuse + versioning.** Second visit reuses published
-   snapshot; new scan diffs against existing; version history visible
-   in admin. *Exit:* no re-scan needed for a known restaurant.
-6. **M5 — Discovery (dish-first).** Dish pages (SSR/SEO), search,
-   map with dish/distance/price/dietary filters, restaurant pages.
-   *Exit:* a dish page links to nearby restaurants serving it.
-7. **M6 — Personalization + price intelligence.** Onboarding (≤5
-   favorite dishes), preference-aware ranking, median/p25/p75 price
-   context with evidence warnings. *Exit:* "spicy beef under 100k,
-   not soup" returns ranked, constraint-honest results.
-8. **M7 — Contributions + studio hardening.** Receipts, corrections,
-   resource/prompt registries, AI inspector, appearance tokens.
-   *Exit:* admin can operate the demo without code changes.
+   show staff, and a second visit reuses the snapshot.
+   **This is the demo gate — protect it.**
+4. **M3 — Runtime Management Studio.** Prompt/template registries,
+   media resources, scanned-menu inspect/correct/publish, read-only
+   AI Inspector. *Exit:* admin can operate the demo without code
+   changes.
+5. **M4 — Discovery (dish-first + map + dish pages).** Dish pages
+   (SSR/SEO), search, map with dish/distance/price/dietary filters,
+   restaurant pages. *Exit:* a dish page links to nearby restaurants
+   serving it.
+6. **M5 — Pricing intelligence + contributions.** Median/p25/p75 price
+   context with evidence warnings, contributions state machine +
+   moderation queue + provenance, receipts as price evidence.
+   *Exit:* price display always includes evidence count + area + date
+   range; contributions flow through moderation.
+7. **M6 — Personalization + polish + demo.** Onboarding (≤5
+   taste anchors), preference-aware ranking, polish, demo script +
+   `demo:reset` + rehearsal. *Exit:* "spicy beef under 100k, not
+   soup" returns ranked, constraint-honest results; demo rehearsal
+   passes end-to-end.
 
 Parallelize only after M0 contracts are stable (see
-`docs/agent-workflow.md`): customer UX owns M2–M3 UI, domain/backend
-owns M1/M4 persistence, AI pipeline owns extraction quality + fixtures,
-data/admin owns M4/M7 studio. Never parallelize M0.
+`docs/agent-workflow.md`): customer UX owns M2 UI, domain/backend
+owns M1/M2 persistence, AI pipeline owns extraction quality + fixtures,
+data/admin owns M3 studio. Never parallelize M0.
 
 ---
 
@@ -515,21 +536,21 @@ silently drifting.
 
 ## Prioritized implementation roadmap
 
-Full milestone definitions live in `docs/milestones/M0…M7` (to be written
-from this outline during `PLANNING` close-out). Summary:
+Full milestone definitions live in `docs/roadmap.md` (M0–M6).
+Summary (aligned with `docs/roadmap.md` — that file is authoritative
+for milestone scope):
 
 | Milestone | Goal | Gate |
 |---|---|---|
-| M0 | Skeleton + contracts | `turbo run check` green; contracts compile |
-| M1 | Menu extraction slice (backend + admin review) | Real photo → validated publishable snapshot |
-| M2 | Schema-driven renderer + interactive menu | Published snapshot → interactive mobile menu |
-| M3 | Bilingual order view | **Demo gate:** scan → confirm → select → show staff |
-| M4 | Menu reuse + versioning | Second visit reuses snapshot; diff on re-scan |
-| M5 | Discovery (dish-first + map) | Dish page → nearby restaurants serving it |
-| M6 | Personalization + price intelligence | Constrained, ranked, preference-aware results + price context |
-| M7 | Contributions + studio hardening | Admin operates demo without code changes |
+| M0 | Contracts, PoCs, skeleton | `turbo run check` green; contracts compile |
+| M1 | Menu extraction vertical slice | Real photo → validated publishable snapshot |
+| M2 | Interactive renderer + bilingual order + persistence/reuse | **Demo gate:** scan → confirm → select → show staff; second visit reuses snapshot |
+| M3 | Runtime Management Studio | Admin operates demo without code changes |
+| M4 | Discovery (dish-first + map + dish pages) | Dish page → nearby restaurants serving it |
+| M5 | Pricing intelligence + contributions | Price display always includes evidence; contributions flow through moderation |
+| M6 | Personalization + polish + demo | Constrained, ranked, preference-aware results + price context; demo rehearsal passes |
 
-Protect M3. Cut scope from M5–M7 before touching M1–M3.
+Protect M2. Cut scope in reverse order (M6 → M4) before touching M0–M2.
 
 ---
 
@@ -543,7 +564,7 @@ decision or a verified fact.
 
 | # | Question | Owner | Unblocks BUILD when… |
 |---|---|---|---|
-| P1 | ~~Is anonymous demo (no account) acceptable, or must travelers sign in?~~ **RESOLVED 2026-10-16 (ADR 0001): guest-first** — browsing, scanning, order drafts need no sign-in; Google Sign-In offered at save moments and for persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence needs no sign-in). | Product / user | ✅ Decision recorded in `docs/auth.md` + `docs/decisions/0001-better-auth-google.md` + `docs/decisions/0003-anonymous-contributions.md` |
+| P1 | ~~Is anonymous demo (no account) acceptable, or must travelers sign in?~~ **RESOLVED 2026-10-16 (ADR 0001): guest-first** — browsing, scanning, order drafts need no sign-in; an explicit guest save persists preferences under the guest's anonymous identity (ADR 0005); Google Sign-In offered for cross-device persistence, order history, and persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence needs no sign-in). | Product / user | ✅ Decision recorded in `docs/auth.md` + `docs/decisions/0001-better-auth-google.md` + `docs/decisions/0003-anonymous-contributions.md` + `docs/decisions/0005-user-preference-hybrid.md` |
 | P2 | Which HCMC seed restaurants/dishes (small curated set) may we use, and under what license/permission? | Product / data | Seed list + provenance note exists; no scraped data enters the repo |
 | P3 | What exactly may the demo claim about dietary safety? Confirm the four evidence tiers (known / common / confirmed / unknown) and the "never claim safe from absence" rule in demo copy. | Product | Wording approved; renderer shows tiers, never a bare "safe" badge |
 | P4 | Demo language set: Vietnamese + English only, or more? | Product | Locale list fixed; translation scope bounded |
@@ -585,9 +606,10 @@ decision or a verified fact.
 ## Status
 
 - [x] Planning pack (this directory): harness docs written, `PLANNING`-only.
-- [ ] Companion docs: product / journeys / demo scope / architecture /
+- [x] Companion docs: product / journeys / demo scope / architecture /
       domain model / AI boundaries / menu rendering / data provenance /
       customer + admin design.
-- [ ] Milestone files `docs/milestones/M0…M7`.
+- [ ] Milestone files `docs/milestones/M0…M6` (to be written from
+      `docs/roadmap.md` during `PLANNING` close-out).
 - [ ] Blocking questions resolved → explicit user authorization →
       `EXECUTION_MODE = BUILD`.
