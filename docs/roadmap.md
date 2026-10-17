@@ -223,8 +223,8 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 
 **Work:**
 
-1. Onboarding: origin (suggestion only), language, dietary/allergies/religious (explicit only), spice, budget, adventurousness, preferred ingredients/textures, up to 5 favorite dishes (searchable, not just suggested). Skippable nonessentials; editable later. Explicit prefs > demographic inference.
-2. Similarity recommendations: favorites → similar local dishes (shared flavors/techniques/textures), with grounded explanations.
+1. Onboarding: origin (suggestion only), language, dietary/allergies/religious (explicit only), spice, budget, adventurousness, preferred ingredients/textures, up to 5 taste anchors (`tasteAnchors`, ADR 0005 — user-facing: "favorite dishes"; searchable, not just suggested). Skippable nonessentials; editable later. Explicit prefs > demographic inference.
+2. Similarity recommendations: taste anchors → similar local dishes (shared flavors/techniques/textures), with grounded explanations.
 3. Polish: empty states, loading states, error recovery, multilingual text behavior, accessibility pass, motion pass, map interactions polish.
 4. Demo: reproducible demo script + `demo:reset` to known state + seeded demo data (labeled demo) + rehearsal. Demo = primary journey (M2) + reuse (M2) + discovery (M4) + one price-context example (M5).
 5. Final verification: full test suite + Playwright (mobile journey + admin flows) + visual review (mobile + desktop) + security review (uploads, authz, PII, injection fixtures).
@@ -232,7 +232,7 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 **Acceptance criteria:**
 
 - [ ] Onboarding completable in <2 minutes; skippable; editable; no assumption that nationality determines taste/religion/diet.
-- [ ] Recommendations reference favorites' features; explanations grounded.
+- [ ] Recommendations reference taste anchors' features; explanations grounded.
 - [ ] Demo rehearsal passes end-to-end on a clean `demo:reset` state.
 - [ ] All M0–M5 acceptance criteria still pass (no regressions).
 - [ ] Visual + accessibility review signed off (mobile + desktop).

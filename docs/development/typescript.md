@@ -127,6 +127,94 @@ column "just in case" — the contract above is the whole system.
   changes) a `docs/decisions/` note. Never widen a schema to `unknown`
   to make a consumer compile.
 
+## String enums for domain vocabularies
+
+Domain discriminators, statuses, and fixed sets of values are
+**string-valued TypeScript enums** — defined once, in
+`packages/contracts`, as the authoritative definition. Effect
+Schema validates them at runtime. Never scatter inline string
+literal unions for domain vocabulary through the codebase, and
+never duplicate a vocabulary across schemas — import the enum.
+
+**Why string enums, not inline unions and not numeric enums:**
+
+- One definition: adding a member (e.g. a new `AllergenCode`)
+  happens in exactly one place; every schema, query, and UI
+  that imports it follows.
+- String values are readable and stable in JSON, API responses,
+  DB rows, and logs. Numeric enums renumber silently and are
+  opaque on the wire — never use them for domain values.
+- Runtime validation stays with Effect Schema: the TS enum is
+  the definition, the Schema is the validator. Neither is
+  hand-duplicated.
+
+**Pattern:**
+
+```ts
+// packages/contracts — TasteAnchorKind (ADR 0005)
+export enum TasteAnchorKind {
+  Dish = "dish",
+  Unmatched = "unmatched",
+}
+
+// Discriminator: Schema.Literal of the enum members
+export const TasteAnchor = Schema.Union(
+  Schema.Struct({
+    kind: Schema.Literal(TasteAnchorKind.Dish),
+    dishId: DishId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal(TasteAnchorKind.Unmatched),
+    label: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(200)),
+  }),
+)
+
+// Plain value set: Schema.Enums of the enum
+export const ContributionStatusSchema = Schema.Enums(ContributionStatus)
+```
+
+**Storage / wire:**
+
+- JSON: the string value (`"dish"`, `"pending_review"`).
+- PostgreSQL: store the string value (`TEXT` + `CHECK` against
+  the enum members, or Drizzle `pgEnum` — decide once in M0;
+  either way the TS enum is authoritative and the DB mirrors it).
+- Never store a numeric enum index. Never accept an unvalidated
+  string into a domain field — decode through the Schema at the
+  boundary.
+
+**Seed vocabulary (defined here; the enum in contracts is
+authoritative, this table is the index):**
+
+| Enum | Members | Source |
+|---|---|---|
+| `TasteAnchorKind` | `dish`, `unmatched` | ADR 0005 §1.2 |
+| `ContributionStatus` | `draft`, `submitted`, `pending_review`, `published`, `rejected`, `needs_more_info` | domain-model §4.13 |
+| `MenuSnapshotStatus` | `draft`, `pending_review`, `published`, `rejected`, `superseded` | domain-model §4.6 |
+| `PriceObservationKind` | `listed`, `receipt_paid` | domain-model §5.3 ("listed vs receipt-paid"). Distinct from `PriceObservation.source` (`menu_snapshot` \| `receipt` \| `manual` \| `contribution`) — kind is the evidence kind, source is where it came from. Do not conflate them. |
+| `AllergenCode` | `peanut`, `tree_nut`, `shellfish`, `fish`, `egg`, `dairy`, `gluten`, `soy`, `sesame`, … (open set — extend by adding a member) | ADR 0004 (its "centralized Effect Schema enum" is this string-valued TS enum) |
+| Allergen status values | `present`, `possibly_present`, `confirmed_absent`, `unknown` | ADR 0004. **Naming note:** ADR 0004 currently uses `AllergenStatus` for the `{ allergen, status, evidence }` record. At BUILD, disambiguate with one mechanical rename (record → `AllergenStatusEntry`, or value enum → `AllergenPresence`). Do not keep two meanings for one name. |
+| `OrderDraftStatus` | `draft`, `confirmed_for_display`, `abandoned` | domain-model §4.17 |
+| `PreferenceConflictStatus` / `PreferenceConflictResolution` | `pending`, `resolved` / `keep_account`, `keep_guest`, `discarded_expired` | ADR 0005 §3 |
+| `CurrencyCode` | `VND`, `USD`, … | Money section above. **Supersedes:** the Money section's "validated `Schema.Literal` union" description — `CurrencyCode` becomes a string enum under this convention. |
+
+**Rules for new vocabulary:** any new domain status,
+discriminator, or fixed value set follows this convention —
+string-valued TS enum in `packages/contracts`, validated by
+Effect Schema, added to the table above when introduced.
+Existing planning docs write these values as inline unions
+(e.g. status (`draft | published | …`)) — read those as
+references to the enums above; at BUILD they are mechanically
+converted to enum references in contracts, with no change in
+meaning.
+
+**Supersedes:** the "Enums: prefer `Schema.Literal` unions over
+TS `enum`" bullet in "Naming and structure" below — that
+guidance is retired for domain vocabularies. Ad-hoc local
+unions that are *not* domain vocabulary (a one-off local
+flag) may still use `Schema.Literal`; anything stored,
+crossing a boundary, or reused is an enum.
+
 ## Naming and structure
 
 - Files: `kebab-case.ts`. Types: `PascalCase`. Functions/vars:
@@ -137,9 +225,10 @@ column "just in case" — the contract above is the whole system.
   no global `utils/` dumping ground.
 - Errors: `<Domain><Problem>` tagged errors (`MenuNotFound`,
   `ExtractionValidationFailed`) — see `docs/development/effect.md`.
-- Enums: prefer `Schema.Literal` unions (`"draft" | "published" |
-  "rejected"`) over TS `enum`. Unions compose with Schema and JSON
-  without a mapping layer.
+- Enums: domain discriminators, statuses, and fixed value sets
+  are string-valued TS enums — see "String enums for domain
+  vocabularies" above. That section supersedes the old
+  prefer-Literal-unions guidance for domain vocabulary.
 - Unknown vs. missing: use `null` for "known to be absent/unknown"
   (e.g. a menu item with no listed price: `price: null`) and omit the
   key for "not applicable." With `exactOptionalPropertyTypes`, these

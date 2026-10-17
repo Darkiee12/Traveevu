@@ -6,6 +6,14 @@
 > price reports) may be *submitted* without sign-in; publication
 > stays manually moderated; reviews + persistent contributor
 > profiles still require Google sign-in.
+> **Amended** 2026-10-17 by ADR 0005 (see "Amendments" below,
+> refined same day): `UserPreference` hybrid document +
+> `tasteAnchors` discriminated collection; a guest's explicit save
+> persists an anonymous-owned row (sign-in enables cross-device
+> persistence); claim transfers when the target has no
+> preferences, otherwise the incoming document is persisted
+> first into `PreferenceConflict` (owned by the account) and
+> both are retained + lazily resolved — never silent overwrite.
 > Decides: auth provider, guest model, admin authorization.
 > Resolves blocking question **Q1** (customer identity) and the M0
 > "auth selection" item. Full design: `docs/auth.md`.
@@ -29,6 +37,21 @@
   publication approval; trust scoring / auto-moderation are future
   work, not hackathon dependencies. See
   `docs/decisions/0003-anonymous-contributions.md`.
+- **ADR 0005 (2026-10-17, refined same day) — `UserPreference`
+  hybrid + claim conflicts.** `UserPreference` is one row per
+  user: validated JSONB document + `schemaVersion` + `revision`
+  (optimistic concurrency); taste anchors live inside the
+  document as one ordered discriminated `tasteAnchors`
+  collection (`TasteAnchor`, max 5 total) — no `FavoriteDish`
+  table. Refines the "sign-in at save moments" rule: a guest's
+  explicit save persists an anonymous-owned row; Google sign-in
+  enables cross-device persistence and claim. On claim,
+  transfer the guest document when the target account has no
+  preferences; when both exist, persist the incoming document
+  first into `PreferenceConflict` (owned by the account),
+  preserve the account document, and resolve lazily + atomically
+  in settings — never silently overwrite. Guest-wins is
+  rejected. See `docs/decisions/0005-user-preference-hybrid.md`.
 
 ## Context
 
@@ -63,13 +86,17 @@ must never grant privilege from a consumer login.
 - Google is the only initial OAuth/OIDC provider. No email/password,
   no second provider in the MVP.
 - Guest-first: browsing, scanning, and order drafts need no sign-in.
-  Sign-in is offered at save moments and for reviews / persistent
-  contributor profiles. Submitting verifiable evidence (menu scans,
-  corrections, price reports) does not require sign-in — amended
-  by ADR 0003, which moves the gate from submission to publication.
+  Sign-in is offered for cross-device persistence, order history,
+  and reviews / persistent contributor profiles. An explicit guest
+  save persists preferences without sign-in (amended by ADR 0005).
+  Submitting verifiable evidence (menu scans, corrections, price
+  reports) does not require sign-in — amended by ADR 0003, which
+  moves the gate from submission to publication.
 - Guest identity = Better Auth anonymous users (lazy minting);
   sign-in claims guest rows via `onLinkAccount` in one idempotent
-  transaction (preferences, favorites, drafts, draft contributions).
+  transaction (preferences, drafts, draft contributions).
+  Preference conflicts resolve per ADR 0005 §3 (transfer, or
+  retain both + lazy resolution — never silent overwrite).
 - Admin: session + server-side `RequireAdmin` middleware reading the
   DB `role`. New users default to `role: "user"`. Admin is granted
   only explicitly (existing admin, or audited seed allowlist) —
