@@ -7,17 +7,18 @@
 
 ```
 Extraction (evidence)  →  Presentation (validated)  →  Renderer (known code)  →  OrderDraft (private)  →  Bilingual order view
-   MenuSnapshot              MenuPresentation            React components          user selections        customer lang + originals
-   + confidence              template + snapshot         from registry           + free-text notes
+   MenuSnapshot /               MenuPresentation            React components          user selections        customer lang + originals
+   PublishedMenuRevision        template + revision         from registry           + free-text notes
+   + confidence                 (or private snapshot)
 ```
 
 | Stage | What it is | Who/what produces it | Mutable? |
 |---|---|---|---|
-| Extraction | `MenuSnapshot`: items, prices, options, uncertainties, confidence, provenance | AI extraction + user confirmation | Append-only; corrections = new version |
-| Presentation | `MenuPresentation`: validated tree of schema nodes, bound to a template version | Pure deterministic builder: `buildPresentation(snapshot, templateVersion)` | Derived; never edited directly |
+| Extraction | `MenuSnapshot`: items, prices, options, uncertainties, confidence, provenance (from a `MenuCaptureSession`; ADR 0006) | AI extraction + user confirmation | Append-only; corrections = new snapshot + new revision |
+| Presentation | `MenuPresentation`: validated tree of schema nodes, bound to a template version | Pure deterministic builder: `buildPresentation(menuSource, templateVersion)` where `menuSource = PublishedMenuRevision \| MenuSnapshot` | Derived; never edited directly |
 | Renderer | React code mapping presentation nodes → known components | Hand-written code in the repo | Code change only |
-| OrderDraft | User selections against one pinned snapshot version | User interaction + deterministic math | User-private; editable until confirmed for display |
-| Bilingual order view | Read-only display: customer language + original local names/modifiers | Deterministic render from OrderDraft + snapshot originals | Derived |
+| OrderDraft | User selections against one pinned `menuRef` (published revision *or* private snapshot) | User interaction + deterministic math | User-private; editable until confirmed for display |
+| Bilingual order view | Read-only display: customer language + original local names/modifiers | Deterministic render from OrderDraft + pinned source originals | Derived |
 
 **Forbidden:** AI-generated JSX, JavaScript, arbitrary HTML, CSS, or template code. If a payload contains executable code, it is rejected by validation and never reaches the renderer.
 
@@ -146,14 +147,17 @@ The renderer maps presentation nodes to **known React components**. AI and templ
 
 ## 5. Menu presentation schema
 
-`MenuPresentation` is the validated output of `buildPresentation(snapshot, templateVersion)`:
+`MenuPresentation` is the validated output of `buildPresentation(menuSource, templateVersion)` where `menuSource = PublishedMenuRevision | MenuSnapshot` (ADR 0006):
 
 ```text
 MenuPresentation {
-  snapshotId, snapshotVersion,
+  menuRef,                          // { kind: published_revision, revisionId } | { kind: private_snapshot, snapshotId }
+  sourceKind,                       // published_revision | private_snapshot
   templateId, templateVersion,
   restaurantRef: { id, name, translatedName? },
   locale: string,                  // presentation locale
+  coverage, coverageNote?,         // MenuCoverage + note — UI shows coverage limitations
+  observedAt?, publishedAt?,       // source snapshot dates / revision publish date — UI shows dates, never live-availability guarantees
   nodes: PresentationNode[],       // tree: section → dish-card → controls
   warnings: PresentationWarning[], // global: e.g. "menu may be outdated"
   estimatedPriceNote?: string,     // "Prices as printed; totals are estimates"
@@ -168,10 +172,10 @@ PresentationNode {
 
 **Rules:**
 
-- Building is **pure + deterministic**: same (snapshot, templateVersion) → same presentation. No AI in the builder. No randomness, no timestamps inside node content (only `builtAt` metadata).
-- Presentation is **derived, not stored as source of truth**. It may be cached (see §7); rebuilding is always possible from snapshot + template.
-- The builder resolves: category grouping, item ordering, locale (translation + original side-by-side), dietary warnings (deterministic from ingredient evidence — see `data-provenance.md` §4), uncertainty badges, and price display (exact numerics + currency).
-- The builder never invents options, prices, or ingredients. If the snapshot lacks them, the presentation shows unknown / omits the control.
+- Building is **pure + deterministic**: same (menuSource, templateVersion) → same presentation. No AI in the builder. No randomness, no timestamps inside node content (only `builtAt` metadata).
+- Presentation is **derived, not stored as source of truth**. It may be cached (see §7); rebuilding is always possible from revision/snapshot + template.
+- The builder resolves: category grouping, item ordering, locale (translation + original side-by-side), **item-level dietary evidence** (user-independent: e.g. "contains peanuts — known" — the *per-user* warning "matches *your* allergy" is a separate overlay computed from `UserPreference` + presentation evidence, never stored in the shared cached presentation; ADR 0006 §2.10), uncertainty badges, and price display (integer minor units + currency).
+- The builder never invents options, prices, or ingredients. If the source lacks them, the presentation shows unknown / omits the control.
 - Form validation rules come from the template (`validationRules`) + control schemas. Validation runs client-side (TanStack Form, Standard Schema) **and** is re-checked deterministically when the order draft is created — client validation is UX, server validation is enforcement.
 
 ## 6. Form state & validation
@@ -189,12 +193,13 @@ PresentationNode {
 
 ## 7. Template version migration & cache invalidation
 
-### 7.1 Cache key
+### 7.1 Cache key (ADR 0006 §2.10)
 
-Presentation cache key: **`(restaurantId, snapshotVersion, templateVersion, locale)`**.
-
-- New snapshot version → new key (old presentations remain valid for old snapshots; drafts pin their snapshot).
-- New published template version → new key; derived presentations rebuild. **Publishing a template never mutates stored snapshots.**
+- Shared menus: **`(publishedRevisionId, templateVersion, locale)`**.
+- Private menus (ordering from a private snapshot): **`(snapshotId, templateVersion, locale)`**.
+- New published revision → new key (old presentations remain valid for old revisions; drafts pin their `menuRef`).
+- Corroboration does **not** invalidate (same revision id — an equivalent scan strengthens evidence without changing public content).
+- New published template version → new key; derived presentations rebuild. **Publishing a template never mutates stored snapshots or revisions.**
 - Cache invalidation is by key versioning, not by arbitrary TTL alone. TTL may exist as a safety net, but version keys are the primary mechanism.
 
 ### 7.2 Template version migration policy
@@ -202,12 +207,12 @@ Presentation cache key: **`(restaurantId, snapshotVersion, templateVersion, loca
 - Templates are versioned; presentations record which template version built them.
 - When a new template version publishes, existing `OrderDraft`s are **not** migrated — they stay pinned to their snapshot + the presentation they were built from. A user starting a new order gets the new template.
 - Breaking changes to the control registry (removing/renaming a control) require: (a) a code change, (b) a registry version bump, (c) templates that reference the removed control fail validation until updated. No silent fallback to a different control.
-- Old snapshots remain renderable: the builder must support all published template versions that reference the current registry, or the template is marked `deprecated` and its presentations rebuild on the latest compatible template with a visible note. Preserve compatibility with previously stored snapshots — never require re-scanning because a template changed.
+- Old snapshots and revisions remain renderable: the builder must support all published template versions that reference the current registry, or the template is marked `deprecated` and its presentations rebuild on the latest compatible template with a visible note. Preserve compatibility with previously stored snapshots/revisions — never require re-scanning because a template changed.
 
-### 7.3 Snapshot versioning interplay
+### 7.3 Revision interplay (ADR 0006)
 
-- `OrderDraft` pins `(snapshotId, snapshotVersion)`. If a newer snapshot publishes while a draft is open, the UI offers: "Menu updated — review changes" (diff: added/removed/price-changed items) with the choice to keep the old draft or start fresh on the new snapshot. Never silently rebase a draft onto a new menu.
-- Menu-change detection: compare new snapshot vs previous published snapshot (deterministic diff on originalName + price + options). Surface to moderators and, where useful, to users.
+- `OrderDraft` pins `menuRef` (published revision *or* private snapshot). If the current pointer moves to a different revision while a draft is open (new publish or rollback), the UI offers: "Menu updated — review changes" (diff: added/removed/price-changed items and options) with the choice to keep the old draft or refresh onto the current revision (explicit, confirmed re-pin + line re-validation). Never silently rebase a draft onto a new menu. If the pinned revision was withdrawn, the refresh offer says so.
+- Menu-change detection: compare a candidate snapshot vs the current published revision's content (`diffMenus` — normalized deterministic comparison on normalized name + price + options + portion/variant context; ADR 0006 §2.6). Equivalence → corroboration (no new revision). Meaningful changes → moderation. Surface to moderators and, where useful, to users.
 
 ## 8. Bilingual order representation
 
@@ -215,7 +220,7 @@ Presentation cache key: **`(restaurantId, snapshotVersion, templateVersion, loca
 
 ```text
 BilingualOrderView {
-  draftId, snapshotId, snapshotVersion,
+  draftId, menuRef,   // pinned published revision or private snapshot (ADR 0006 §2.9)
   customerLocale: string, restaurantLocale: string,   // e.g. "en" / "vi"
   lines: [{
     quantity,
@@ -244,24 +249,24 @@ BilingualOrderView {
 ## 9. Sample interaction (end-to-end)
 
 ```
-1. Menu image → AI extraction → validated MenuExtraction (unknown stays unknown)
-2. User confirmation / correction → new MenuSnapshot (version N, status pending/published)
-3. buildPresentation(snapshot N, template V) → validated MenuPresentation
+1. Menu photo(s) → `MenuCaptureSession` (private, token-based for guests) → AI extraction → validated MenuExtraction (unknown stays unknown)
+2. User confirmation / correction → private `MenuSnapshot` (draft) with per-page evidence + coverage
+3. buildPresentation(private snapshot, template V) → validated MenuPresentation
 4. Renderer maps nodes → dish-card / quantity / single-choice / multiple-choice / text-note / warning
 5. User selects items, sizes, modifiers, quantities, special requests
-   → validation (template rules + snapshot options) → OrderDraft (pinned to snapshot N)
-6. Deterministic totals + dietary warnings → bilingual order view
+   → validation (template rules + snapshot options) → OrderDraft (pinned to private snapshot via `menuRef`)
+6. Deterministic totals + dietary evidence (+ per-user warning overlay) → bilingual order view
 7. User shows phone to staff. No submission, no payment.
-8. (If eligible + confirmed) Contribution → moderation → published menu reusable
-   by the next traveler WITHOUT re-scanning (same snapshot N, same template).
+8. (If eligible + confirmed) Contribution → moderation → `PublishedMenuRevision` (new revision referencing the approved snapshot) reusable
+   by the next traveler WITHOUT re-scanning (same revision, same template).
 ```
 
-**Reuse rule:** The customer must not need to scan the same menu again if a sufficiently recent and trusted version is already available. "Sufficiently recent and trusted" = latest `published` snapshot, with its `capturedAt` / `observedMenuAt` shown. The UI always shows the menu's date and offers "Re-scan if this looks outdated". Menus change over time — recency is displayed, not assumed.
+**Reuse rule:** The customer must not need to scan the same menu again if a sufficiently recent and trusted version is already available. "Sufficiently recent and trusted" = current published revision for (restaurant, scope), with its observation date (`observedMenuAt` / `capturedAt`), verification date (`publishedAt`), and coverage shown. The UI always shows the menu's dates + coverage and offers "Re-scan if this looks outdated". Menus change over time — recency is displayed, not assumed. Pending contributions never change the public menu.
 
 ## 10. Admin preview
 
 - The studio's menu preview uses the **same renderer** as the customer app wherever practical (shared renderer code / same presentation builder). An admin correcting a menu sees exactly what the customer will see.
-- Admin corrections to a snapshot create a new snapshot version (never silent overwrite) and rebuild the presentation. The preview shows the new version + a diff vs the previous version.
+- Admin corrections to a menu materialize a candidate snapshot + (on approval) a new published revision (never silent overwrite) and rebuild the presentation. The preview shows the new revision + a diff vs the current revision.
 - The AI Inspector can show, for a snapshot: extraction payload, uncertainties, prompt version, model, validation errors, latency/tokens, and the human corrections applied — so a developer can understand why an extraction produced an unexpected result.
 
 ## 11. Security constraints (renderer-specific)

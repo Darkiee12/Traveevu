@@ -66,13 +66,15 @@ field, or a later extension:
 | Concept | Role |
 |---|---|
 | `Restaurant` | Identity + location (PostGIS point) + locale. No menu data embedded. |
-| `MenuSnapshot` | One observation of one restaurant's menu at one time: source image ref, observed-at, extraction confidence, status (`draft` → `published` / `rejected`), supersedes link. Never mutated in place — new scan = new snapshot. |
+| `MenuCaptureSession` | One private scanning session: N ordered photos + combined AI extraction; token-based for guests, temp retention (ADR 0006). At most one snapshot per session in MVP. |
+| `MenuSnapshot` | One immutable observation of captured menu content (possibly partial): source image refs, observed-at, extraction confidence, coverage (`unknown` / `partial` / `reported_complete`), status (`draft` → `pending_review` → `approved` / `rejected`). Never "published" — publication belongs to `PublishedMenuRevision`. Never mutated in place — new scan = new snapshot (ADR 0006). |
+| `PublishedMenuRevision` | The approved, reusable restaurant menu for (restaurant, scope): references ≥1 approved snapshots (MVP: exactly 1), `revisionNumber` monotonic per restaurant+scope. `published` = in the published set (may or may not be current); `superseded` = withdrawn. Current menu = pointer-selected revision (`CurrentMenuRevision` — explicit, transactional; rollback moves the pointer, no new revision) (ADR 0006). |
 | `MenuItem` | One row inside a snapshot: original name (verbatim), translated name, description, category, price (minor units + currency), size/options. May carry its own evidence-backed `ingredients[]` / `allergenStatuses[]` for this serving (ADR 0004). Belongs to exactly one snapshot. |
 | `MenuItemOption` | A documented size / modifier / choice group on a `MenuItem`. Only options present in the evidence exist. No invented options. |
 | `Dish` | Canonical, restaurant-independent dish (e.g. Cơm tấm): canonical name, aliases, ingredients as validated values (`{ name, normalizedId?, role, evidenceLevel, sourceRef? }` — typical recipe, not guaranteed preparation), allergen statuses as validated values (four-state: `present \| possibly_present \| confirmed_absent \| unknown`; missing ≠ confirmed absent), dietary notes, origin, flavor/texture. Linked from `MenuItem` by a nullable, confidence-scored mapping — mapping is a guess, never a fact. See ADR 0004. |
 | `PriceObservation` | One price evidence event: source type (`menu-listed` vs `receipt-paid`), amount, currency, dish/menu-item ref, observed-at, confidence. Listed ≠ paid; keep them distinct. |
 | `Contribution` | The provenance wrapper for a user-submitted scan/receipt/correction: who (pseudonymous; anonymous evidence submissions allowed, `pending_review`, never auto-published — ADR 0003), what, source refs, status, moderation decision. Owner FK nullable (`ON DELETE SET NULL`) + immutable attribution snapshot so contributions survive anonymous-user deletion. Private profile/order data is never part of it. |
-| `OrderDraft` | Ephemeral, user-private selection state: snapshot ref + chosen items/options/quantities + free-text notes (flagged as unconfirmed) + estimated total. Never stored inside a shared snapshot. |
+| `OrderDraft` | Ephemeral, user-private selection state: `menuRef` (pinned published revision *or* private snapshot) + chosen items/options/quantities + free-text notes (flagged as unconfirmed) + estimated total. Never stored inside shared content. Never silently rebased — refresh is explicit + confirmed (ADR 0006). |
 | `AIExecution` | Audit record for one AI call: task, prompt version, model id, input refs (not raw PII), output validation result, latency, token/cost if available. |
 
 Deliberately **not** first-class tables in the MVP: `DishVariant`
@@ -204,26 +206,34 @@ prompts are data, never evaluated as code; resources are binary + metadata.
 Four layers, four owners, one direction of flow:
 
 1. **Extraction data** (`MenuSnapshot` + `MenuItem`s) — *evidence*.
-   Owned by the Menus domain. Immutable once published; corrections
-   create a new snapshot version. Contains only what was observed
-   (unknown stays `null`/`unknown`, with confidence). Never contains
-   user preferences or order state.
+   Owned by the Menus domain. Immutable once stored; snapshots are
+   never "published". Corrections materialize a candidate snapshot
+   and, on approval, a new `PublishedMenuRevision`. Contains only
+   what was observed (unknown stays `null`/`unknown`, with
+   confidence; coverage explicit). Never contains user preferences
+   or order state.
 2. **Template** (`MenuTemplateVersion`) — *presentation rules*.
    Owned by the Template Registry. Declares which controls/layouts may
    be used and how. Contains no restaurant data and no user data.
 3. **Generated presentation** (`MenuPresentation`) — *derived view*.
-   Pure function: `presentation = render(snapshot, template, locale,
-   userDietaryFlags)`. It is cacheable, version-keyed by
-   `(snapshotId, templateVersionId, locale)`, and regenerable at any
-   time. It is **not** stored as the source of truth; storing it is an
-   optimization with an invalidation rule, not a new entity. Dietary
-   warnings here are *derived annotations*, computed deterministically
-   from dish evidence tiers — never baked into the snapshot.
+   Pure function: `presentation = render(publishedRevision |
+   privateSnapshot, template, locale)`. It is cacheable,
+   version-keyed by `(publishedRevisionId, templateVersionId,
+   locale)` (shared) or `(snapshotId, templateVersionId, locale)`
+   (private), and regenerable at any time. It is **not** stored as
+   the source of truth; storing it is an optimization with an
+   invalidation rule, not a new entity. The presentation embeds
+   user-independent item-level dietary evidence; the per-user
+   warning ("matches *your* allergy") is a separate overlay
+   computed from `UserPreference` + presentation evidence —
+   never baked into the shared cached presentation, never baked
+   into the snapshot.
 4. **Order state** (`OrderDraft`) — *private user selection*.
-   Owned by the Ordering domain, keyed to the user + snapshot. Holds
+   Owned by the Ordering domain, keyed to the user + `menuRef`
+   (pinned published revision *or* private snapshot). Holds
    chosen items/options/quantities, free-text notes (marked
    unconfirmed), and a computed estimated total. It references the
-   snapshot; it never mutates it. The bilingual staff view is a
+   pinned source; it never mutates it. The bilingual staff view is a
    read-only rendering of the draft (user locale + restaurant locale
    side by side), clearly labeled as a *request to communicate*, not a
    confirmed order.
@@ -336,14 +346,14 @@ Order by **demo-critical path first, with contracts before code**:
 2. **M1 — Menu extraction vertical slice (backend).** Upload →
    AI extraction (one task, one prompt version) → schema validation →
    snapshot persistence → admin review screen (list + correct + publish).
-   *Exit:* a real menu photo becomes a validated, publishable snapshot.
+   *Exit:* a real menu photo becomes a validated, publishable snapshot (candidate for a published revision).
 3. **M2 — Interactive renderer + bilingual order + persistence/reuse.**
    Template registry (one template), presentation derivation,
    quantity / choice / note controls, dietary annotations, estimated
    total, OrderDraft → bilingual staff page (user locale + Vietnamese
-   originals), persistence + reuse of published snapshots.
+   originals), persistence + reuse of published revisions.
    *Exit:* end-to-end demo works on a phone: scan → confirm → select →
-   show staff, and a second visit reuses the snapshot.
+   show staff, and a second visit reuses the published revision.
    **This is the demo gate — protect it.**
 4. **M3 — Runtime Management Studio.** Prompt/template registries,
    media resources, scanned-menu inspect/correct/publish, read-only
@@ -544,7 +554,7 @@ for milestone scope):
 |---|---|---|
 | M0 | Contracts, PoCs, skeleton | `turbo run check` green; contracts compile |
 | M1 | Menu extraction vertical slice | Real photo → validated publishable snapshot |
-| M2 | Interactive renderer + bilingual order + persistence/reuse | **Demo gate:** scan → confirm → select → show staff; second visit reuses snapshot |
+| M2 | Interactive renderer + bilingual order + persistence/reuse | **Demo gate:** scan → confirm → select → show staff; second visit reuses published revision |
 | M3 | Runtime Management Studio | Admin operates demo without code changes |
 | M4 | Discovery (dish-first + map + dish pages) | Dish page → nearby restaurants serving it |
 | M5 | Pricing intelligence + contributions | Price display always includes evidence; contributions flow through moderation |

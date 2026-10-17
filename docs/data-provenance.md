@@ -32,8 +32,11 @@ Provenance {
   confidence?: number,   // extraction/matching confidence where applicable
   evidenceLevel: enum,   // verified | observed | common | unknown
   status: enum,          // draft | pending_review | published | rejected | superseded
+                         // (entity-specific: MenuSnapshot never uses
+                         //  published/superseded — ADR 0006; revisions do)
   createdBy?: id,        // private — never exposed publicly
-  supersedesId?: id      // previous version, if any
+  supersedesId?: id      // previous version, if any (revisions;
+                         //  snapshots use provenance.baseSnapshotIds)
 }
 ```
 
@@ -44,14 +47,14 @@ Provenance {
 
 Conflating these two produces false "freshness" claims (a 2023 menu scanned in 2026 is not fresh). The UI shows the observed date where known, and the capture date otherwise, labeled correctly.
 
-## 3. Menu observations — versioning & change detection
+## 3. Menu observations — versioning & change detection (ADR 0006)
 
-- `MenuSnapshot` rows are append-only and immutable once stored (see `domain-model.md` §4.6). Corrections, re-scans, and admin edits create **new versions**; nothing overwrites.
-- Each version records: restaurant, snapshot version, image ref, extraction payload, confidence, status, `supersedesId`, timestamps.
-- **Current menu** = latest `published` snapshot for a restaurant, resolved deterministically. History remains queryable.
-- **Change detection:** When a new snapshot is stored, a deterministic diff vs the previous published snapshot reports: added items, removed items, price changes (old → new), option changes. The diff is surfaced to moderators and, where useful, to users ("3 prices changed since your last visit").
+- `MenuSnapshot` rows are append-only and immutable once stored (see `domain-model.md` §4.6). Corrections, re-scans, and admin edits create **new observations**; nothing overwrites. Snapshots are never "published" — publication belongs to `PublishedMenuRevision`.
+- Each observation records: restaurant, scope, snapshot version, session, image refs, extraction payload, confidence, coverage, provenance, status, timestamps.
+- **Current menu** = pointer-selected current **revision** for a (restaurant, scope) — `CurrentMenuRevision`, resolved via `resolveCurrentMenu(restaurantId, scope)`. Currentness is an explicit pointer, not "latest published by number"; publish / rollback / withdraw move it transactionally (ADR 0006 §2.11). History remains queryable. Pending contributions never silently change public content.
+- **Change detection:** When a candidate snapshot is submitted, a normalized deterministic diff (`diffMenus`, ADR 0006 §2.6) vs the current published revision's content reports: added items, removed items, price changes (old → new), option changes — comparing like-for-like (same portion / variant / options context). Equivalence → corroboration (no new revision). Meaningful changes → moderation. The diff is surfaced to moderators and, where useful, to users ("3 prices changed since your last visit").
 - **Comparison, not replacement:** A scan may be compared with an existing menu to detect changes. The comparison result is itself stored (diff + timestamps), not just acted on silently.
-- **Reuse:** The next traveler reuses the latest published snapshot without re-scanning. The UI shows the snapshot's date + "Re-scan if this looks outdated".
+- **Reuse:** The next traveler reuses the current published revision without re-scanning. The UI shows the observation date + verification date + coverage + "Re-scan if this looks outdated".
 
 ## 4. Dietary safety — evidence tiers (normative)
 
@@ -186,15 +189,19 @@ hackathon dependencies; they need their own ADR if ever introduced.
 
 | Data | Published when | Evidence quality / verification (ADR 0003) |
 |---|---|---|
-| Menu snapshot | Contribution approved by moderator (or eligible fast-path, if defined) | Menu scan: photo-backed + extraction payload; moderator checks extraction against the photo. Highest of the anonymous evidence classes — re-verifiable. |
+| Published menu revision | Moderator publishes a new revision referencing an approved snapshot (or eligible fast-path, if defined) | Menu scan: photo-backed + extraction payload; moderator checks extraction against the photo. Highest of the anonymous evidence classes — re-verifiable. A snapshot is "published" only by being referenced from a published revision; approved-but-unreferenced snapshots are evidence, not public content. |
 | Price observation | Moderated + deduplicated; receipt-paid observations need legible line items | Receipt-backed (`source: receipt`): photo with legible line items. Manual (`source: manual`): typed, unverified — never receipt-backed, confidence capped, published only as "reported price, unverified". Manual and receipt-backed are never aggregated or displayed equivalently. |
 | Review | **DEFERRED from the MVP** (future independent entity — `domain-model.md` §4.14). When implemented: moderated (spam/abuse/PII check); reviews are opinions, never dietary/price evidence | Signed-in only when implemented (ADR 0003). |
 | Dish (canonical) | Curated or moderator-approved; AI-proposed dishes stay `draft` until reviewed | — |
 
-**Corrections** (field-level change list against a published
-snapshot) are verified as diff + reason against prior evidence;
-allergen corrections always need moderator review. Corrections go
-through the same contribution/moderation path as new submissions.
+**Corrections** (field-level change list against the current
+published revision, ADR 0006 §5) are verified as diff + reason
+against prior evidence; allergen corrections always need
+moderator review. On submit the system materializes a candidate
+snapshot (current revision content + change list, applied
+deterministically); on approval a new revision references it.
+Corrections go through the same contribution/moderation path
+as new submissions.
 
 ### 6.3 Audit trails
 
@@ -205,8 +212,8 @@ through the same contribution/moderation path as new submissions.
 ## 7. Corrections
 
 - Any user or moderator can propose a correction (price, dish mapping, translation, option, allergen note).
-- A correction creates a **new observation/version**, never a silent in-place edit. The old version remains in history with its provenance.
-- **Field-level provenance (review amendment 2026-10-16):** each field carries `evidenceLevel: ai_extracted | user_confirmed | restaurant_confirmed` + `sourceRef` + `confirmedBy/at` where applicable. The original extraction is preserved verbatim; a correction is a `Contribution(type: correction)` with an explicit field-level change list (`field, oldValue, newValue, reason, actor, at`) that produces a new snapshot version. The confirm screen promotes only fields the user actually reviewed. Safety-relevant corrections (adding/removing an allergen) require moderator review — never auto-published from one user correction.
+- A correction creates a **new observation** (candidate snapshot, ADR 0006 §5) and, on approval, a **new published revision** — never a silent in-place edit. The old revision remains in history with its provenance.
+- **Field-level provenance (review amendment 2026-10-16):** each field carries `evidenceLevel: ai_extracted | user_confirmed | restaurant_confirmed` + `sourceRef` + `confirmedBy/at` where applicable. The original extraction is preserved verbatim; a correction is a `Contribution(type: correction)` with an explicit field-level change list (`field, oldValue, newValue, reason, actor, at`) against the current published revision, which materializes a candidate snapshot and, on approval, a new revision. The confirm screen promotes only fields the user actually reviewed. Safety-relevant corrections (adding/removing an allergen) require moderator review — never auto-published from one user correction.
 - Corrections go through the same contribution/moderation path as new submissions.
 - If a correction invalidates a previously published claim (e.g., a price was wrong), the corrected version supersedes it, and the UI reflects the correction. The history shows both versions + the reason.
 - Malicious / spam corrections are handled by moderation + rejection reasons; repeated abuse may restrict contribution privileges (decide enforcement in M0 auth/moderation design). Guest IDs alone are not abuse prevention (ADR 0003) — clearing cookies mints a fresh anonymous identity, so controls must include per-IP rate limits, per-submission validation, and the moderation queue as the hard gate.
