@@ -34,10 +34,11 @@
 
 Traveevu needs identity for exactly three things: (1) persisting a
 traveler's preferences / favorites / order history, (2) attributing
-persistent community contributions (menus, corrections, reviews),
-(3) protecting the admin studio. The main demo flow (scan → interactive
-menu → bilingual order) must work with zero sign-in friction, and the
-admin studio must never grant privilege from a consumer login.
+persistent community contributions (menus, corrections, and reviews
+when Review ships — deferred from MVP), (3) protecting the admin
+studio. The main demo flow (scan → interactive menu → bilingual
+order) must work with zero sign-in friction, and the admin studio
+must never grant privilege from a consumer login.
 
 ## Options considered
 

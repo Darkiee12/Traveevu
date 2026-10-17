@@ -192,7 +192,7 @@ for verifiable evidence. Nothing anonymous is ever auto-published.
 | Submit a menu scan | No (anonymous guest) | `pending_review` → manual moderator approval |
 | Submit a correction | No (anonymous guest) | `pending_review` → manual moderator approval; allergen corrections always need moderator review |
 | Submit a price report | No (anonymous guest) | `pending_review` → manual moderator approval; manual prices are never receipt-backed (ADR 0003 §3) |
-| Submit a review | **Yes** — Google sign-in | Moderated; opinions, never dietary/price evidence |
+| Submit a review (deferred from MVP; when implemented) | **Yes** — Google sign-in | Moderated; opinions, never dietary/price evidence |
 | Persistent contributor profile (public history, attribution page) | **Yes** — Google sign-in | N/A |
 
 - The UI offers "Sign in with Google to save" **at the moment the
@@ -422,9 +422,9 @@ AuthenticatedIdentity {
 - **Admin design:** §9 auth section now reads: Better Auth session +
   `RequireAdmin` middleware + audited explicit grants; no auto-admin.
 - **User journeys:** sign-in appears only at save moments and for
-  reviews / persistent contributor profiles (ADR 0003: submitting
-  evidence does not require sign-in); the P1 demo flow has no
-  sign-in step.
+  persistent contributor profiles, and for reviews when Review
+  ships (deferred from MVP; ADR 0003: submitting evidence does not
+  require sign-in); the P1 demo flow has no sign-in step.
 - **No changes to:** money, snapshot immutability, template/renderer
   boundary, menu extraction contracts, pricing rules.
 

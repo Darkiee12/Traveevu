@@ -167,7 +167,7 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 1. NL intent extraction → validated `SearchIntent` → deterministic filters (dietary, price caps, distance, flavor/texture) over structured data.
 2. Dish-first discovery: dish cards (canonical name, translation, description, flavor/texture, price context, nearby restaurants serving it).
 3. Dish pages + restaurant pages: SSR, SEO meta, canonical URLs (ID strategy from M0: UUID vs slug).
-4. Map: MapLibre + OSM tiles + attribution, filters (dish, distance, price, dietary, attributes, reviews, relevance), restaurant pins → dish availability.
+4. Map: MapLibre + OSM tiles + attribution, filters (dish, distance, price, dietary, attributes, relevance; reviews filter deferred with Review), restaurant pins → dish availability.
 5. Recommendation explanations grounded in deterministic ranking features only.
 6. Onboarding (lightweight version if M6 slips): language + dietary + favorites (up to 5, searchable) — enough to personalize discovery; full onboarding in M6.
 
@@ -184,11 +184,11 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 
 ---
 
-## M5 — Pricing intelligence + contributions + reviews
+## M5 — Pricing intelligence + contributions
 
 **Dependencies:** M2 (snapshots, contributions) + M4 (discovery surfaces to show price context).
 
-**Expected result:** Dish-level price context is honest (median/percentiles + evidence counts, never LLM averages), contributions and reviews flow through moderation, and receipts strengthen price evidence without exposing PII.
+**Expected result:** Dish-level price context is honest (median/percentiles + evidence counts, never LLM averages), contributions flow through moderation, and receipts strengthen price evidence without exposing PII. Reviews are **deferred from the MVP** (future independent entity — see `domain-model.md` §4.14); no Review table is built in M5.
 
 **Owner:** Domain/Backend (pricing, contributions) + Customer UX (price UI) + AI Pipeline (receipt extraction) + Data/Admin (moderation).
 
@@ -196,8 +196,8 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 
 1. Price stats: deterministic median / p25 / p75 / min / max from `PriceObservation`s, grouped by kind (listed vs receipt-paid), area, date range, variant/portion. Display: "Typical nearby range: 40,000–65,000 VND (n=12, District 1, last 90 days)". Insufficient evidence → "insufficient evidence".
 2. Receipt extraction: line items, tax, discounts, combos, portions separated; PII redaction; private-by-default storage; receipt-paid observations via moderation.
-3. Contributions: menu photos, food photos, receipts, price observations, reviews, corrections — full state machine + moderation queue + provenance.
-4. Reviews: dish/restaurant reviews, moderation, display; reviews never used as dietary/price evidence.
+3. Contributions: menu photos, food photos, receipts, price observations, corrections — full state machine + moderation queue + provenance. (Reviews are NOT part of M5 — deferred, see item 4.)
+4. Reviews: **DEFERRED from the MVP.** Do not build the `Review` table, review submission, or review display in M5. When Review ships (post-MVP): dish/restaurant reviews, moderation, display; reviews never used as dietary/price evidence; reviews require Google sign-in (ADR 0003).
 5. Price-change detection: new observations vs history; surface meaningful changes (moderator + user where useful).
 
 **Acceptance criteria:**
@@ -253,6 +253,7 @@ Each milestone below lists: dependencies, expected result, owner agent, acceptan
 | Advanced onboarding (age range, textures, etc.) | Simplify to language + dietary + favorites if needed |
 | Real-time / offline / on-device AI | Out of scope |
 | Payment / order submission | Never in scope |
+| Reviews (`Review` entity) | Deferred from MVP — future independent entity, not a value object, no table now, no JSONB arrays, no placeholder ratings/stats (see `domain-model.md` §4.14) |
 | Chatbot-first UI | Never in scope |
 | AI-generated executable UI | Forbidden, not deferred |
 | Remote CSS/JS | Forbidden, not deferred |
