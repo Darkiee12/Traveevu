@@ -1,2 +1,625 @@
-# Traveevu
-Discover local food without the guesswork - understand dishes, dietary compatibility, fair prices, and where to find them nearby.
+# Traveevu — Planning Pack (PLANNING mode)
+
+> **EXECUTION_MODE = `PLANNING`**
+>
+> This pack contains planning, architecture, and harness documentation only.
+> **Write no application code** until the user explicitly authorizes `BUILD`
+> and implementation is permitted under hackathon rules.
+> The upstream repo `Darkiee12/Traveevu` (default branch `master`) currently
+> contains only `LICENSE` + `README.md` — no code yet. That is intentional:
+> this pack must land first, be reviewed, and only then unlock `BUILD`.
+
+**What Traveevu is, in one sentence:** a mobile-first, AI-native food
+discovery and ordering companion that helps a traveler in an unfamiliar
+food environment discover what to eat, understand dishes and menus,
+compare local prices, and communicate an order to staff without needing
+the local language — starting in Ho Chi Minh City (District 1, District 3,
+Bình Thạnh) and architected for other cities, currencies, and languages.
+
+## How to use this pack
+
+| File | Purpose |
+|------|---------|
+| `README.md` (this file) | Entry point: critical review, architecture, repo structure, library list, roadmap pointer, blocking questions |
+| `AGENTS.md` | Short root instructions for every agent working in the repo |
+| `docs/agent-workflow.md` | Multi-agent harness: contracts-first, workstreams, task/report templates, integration review |
+| `docs/development/effect.md` | Effect 4 backend conventions |
+| `docs/development/typescript.md` | TypeScript + contract + money/time conventions |
+| `docs/development/frontend.md` | TanStack Start frontend conventions |
+
+Companion product/architecture docs (product, user journeys, demo scope,
+domain model, AI boundaries, menu rendering, data provenance, customer /
+admin design) are **not** in this pack — they are produced as a separate
+deliverable set in `PLANNING` and must agree with the decisions here.
+If they disagree, this pack's contract-ownership and safety rules win
+until explicitly amended.
+
+---
+
+## Critical review — answers to the 10 first-assignment questions
+
+### 1. Is the proposed system coherent, or are we combining too many separate products?
+
+**Coherent — but only if one journey is protected.** The features look
+like several products (discovery app + menu scanner + ordering assistant +
+price intelligence + admin studio), but they share one spine: **a menu
+observation becomes structured data, which becomes a reusable interactive
+menu, which becomes a bilingual order.** Every feature either feeds that
+spine (scan → extraction → contribution → reuse) or reads from it
+(discovery, price context, dietary warnings).
+
+The coherence risk is real: personalization, price heatmaps, historical
+price graphs, community reviews, and a full runtime studio could each
+swallow the hackathon. The guardrail is the MVP priority in §11 of the
+master prompt: the demo is *scan → understand → select → show bilingual
+order*. Everything else is P2–P4 and must not displace that slice.
+Admin/studio features exist to make the demo operable and debuggable
+(publish a prompt, fix a menu, preview a render), not to become a
+second product. If a feature does not serve the scan-to-order spine or
+make it demonstrably more trustworthy, it is cut or deferred.
+
+### 2. What is the smallest domain model that supports menu scanning, interactive ordering, and menu reuse?
+
+Nine concepts carry the slice; everything else is a value object, a
+field, or a later extension:
+
+| Concept | Role |
+|---|---|
+| `Restaurant` | Identity + location (PostGIS point) + locale. No menu data embedded. |
+| `MenuCaptureSession` | One private scanning session: N ordered photos + combined AI extraction; token-based for guests, temp retention (ADR 0006). At most one snapshot per session in MVP. |
+| `MenuSnapshot` | One immutable observation of captured menu content (possibly partial): source image refs, observed-at, extraction confidence, coverage (`unknown` / `partial` / `reported_complete`), status (`draft` → `pending_review` → `approved` / `rejected`). Never "published" — publication belongs to `PublishedMenuRevision`. Never mutated in place — new scan = new snapshot (ADR 0006). |
+| `PublishedMenuRevision` | The approved, reusable restaurant menu for (restaurant, scope): references ≥1 approved snapshots (MVP: exactly 1), `revisionNumber` monotonic per restaurant+scope. `published` = in the published set (may or may not be current); `superseded` = withdrawn. Current menu = pointer-selected revision (`CurrentMenuRevision` — explicit, transactional; rollback moves the pointer, no new revision) (ADR 0006). |
+| `MenuItem` | One row inside a snapshot: original name (verbatim), translated name, description, category, price (minor units + currency), size/options. May carry its own evidence-backed `ingredients[]` / `allergenStatuses[]` for this serving (ADR 0004). Belongs to exactly one snapshot. |
+| `MenuItemOption` | A documented size / modifier / choice group on a `MenuItem`. Only options present in the evidence exist. No invented options. |
+| `Dish` | Canonical, restaurant-independent dish (e.g. Cơm tấm): canonical name, aliases, ingredients as validated values (`{ name, normalizedId?, role, evidenceLevel, sourceRef? }` — typical recipe, not guaranteed preparation), allergen statuses as validated values (four-state: `present \| possibly_present \| confirmed_absent \| unknown`; missing ≠ confirmed absent), dietary notes, origin, flavor/texture. Linked from `MenuItem` by a nullable, confidence-scored mapping — mapping is a guess, never a fact. See ADR 0004. |
+| `PriceObservation` | One price evidence event: source type (`menu-listed` vs `receipt-paid`), amount, currency, dish/menu-item ref, observed-at, confidence. Listed ≠ paid; keep them distinct. |
+| `Contribution` | The provenance wrapper for a user-submitted scan/receipt/correction: who (pseudonymous; anonymous evidence submissions allowed, `pending_review`, never auto-published — ADR 0003), what, source refs, status, moderation decision. Owner FK nullable (`ON DELETE SET NULL`) + immutable attribution snapshot so contributions survive anonymous-user deletion. Private profile/order data is never part of it. |
+| `OrderDraft` | Ephemeral, user-private selection state: `menuRef` (pinned published revision *or* private snapshot) + chosen items/options/quantities + free-text notes (flagged as unconfirmed) + estimated total. Never stored inside shared content. Never silently rebased — refresh is explicit + confirmed (ADR 0006). |
+| `AIExecution` | Audit record for one AI call: task, prompt version, model id, input refs (not raw PII), output validation result, latency, token/cost if available. |
+
+Deliberately **not** first-class tables in the MVP: `DishVariant`
+(a row on `Dish` / `MenuItem` with a `variant` label until variants prove
+they need their own lifecycle — ADR 0002), `Ingredient` / `Allergen` as standalone
+registries (no `Ingredient` / `Allergen` / `DishIngredient` / `IngredientAllergen`
+tables — validated values on `Dish`, optional evidence-backed values on `MenuItem`;
+allergen vocabulary is one centralized Effect Schema enum; promote to tables only
+on the ADR 0004 triggers: cross-dish ingredient querying, duplicated vocabulary
+maintenance, or centrally curated ingredient→allergen relationships), `Review`
+(deferred from the MVP entirely — future independent entity with its own author,
+target, timestamps, moderation state, and lifecycle; NOT a value object, no table
+now, never a JSONB array on `Dish`/`Restaurant`; no placeholder ratings/stats
+without real data — see `domain-model.md` §4.14),
+`UserPreference` is one table per user (ADR 0005, hybrid): `userId`
+(PK, FK → Better Auth `user.id`), `preferences` (validated JSONB —
+Effect Schema `UserPreferenceDoc`), `schemaVersion` (document
+format, not edit history), `revision` (optimistic concurrency),
+timestamps. Taste anchors live inside the document as one ordered
+discriminated collection `preferences.tasteAnchors` (`TasteAnchor`,
+max 5 total: `{ kind: dish, dishId } | { kind: unmatched, label }`;
+only `dish` entries are verified catalog references; AI may
+suggest resolutions for `unmatched` labels, never silently
+convert them) — there is **no** `FavoriteDish` table in the MVP.
+Future arbitrary bookmarking is a separate model. Guest
+preferences stay client-side until explicitly saved; an explicit
+guest save may mint an anonymous identity + persist the document;
+Google sign-in enables cross-device persistence. On claim:
+transfer when the target account has no preferences; when both
+exist, persist the incoming document first into
+`PreferenceConflict` (owned by the account), retain both + lazy
+atomic resolution — never silently overwrite (guest-wins
+rejected).
+
+### 3. Which parts genuinely require AI, and which should be deterministic?
+
+**AI — interpretation and explanation only:**
+
+- Natural-language intent → structured search intent (constraints, dish
+  hints, budget, exclusions). AI proposes; deterministic code enforces.
+- Menu/receipt image → structured extraction (names, prices, categories,
+  options). AI proposes; schema validation + user confirmation decide.
+- Translation of names/descriptions/special requests (with original
+  preserved alongside).
+- Dish matching: menu-item name → candidate canonical `Dish` (scored
+  candidates; human/admin confirms, never auto-merges silently).
+- Recommendation explanations ("similar to X you like because grilled,
+  smoky, …") — prose grounded in structured dish attributes.
+
+**Deterministic — everything that affects safety, money, or truth:**
+
+- Hard-constraint enforcement (dietary exclusions, allergen flags,
+  budget ceiling, distance, availability). An LLM never overrides these.
+- Price math: totals, ranges, medians/percentiles, currency handling.
+  Integer minor units only; no float, no LLM arithmetic.
+- Dietary safety verdicts: only *known / common / confirmed / unknown*
+  evidence tiers (see §10 of master prompt). Absence of evidence is
+  never evidence of safety.
+- Form validation, template resolution, rendering, ordering rules,
+  versioning, moderation state transitions.
+- Search ranking *combination*: deterministic scoring over structured
+  signals; AI may supply a relevance feature, never the final sort alone.
+
+Rule of thumb: **if a wrong answer costs money, health, or trust, it is
+deterministic. If a wrong answer costs only relevance or phrasing, AI may
+propose it inside a validated contract.**
+
+### 4. How should Effect, PostgreSQL, Drizzle, TanStack Start, and shared contracts fit together?
+
+```
+┌─────────────────── apps/ (TanStack Start, SSR) ───────────────────┐
+│ customer app ──► BFF / API routes ──► packages/contracts (Schema)   │
+│ admin app    ──► same contracts, admin-only routes                  │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ JSON over HTTP, Schema-validated both ends
+┌─────────────────── apps/api (Effect) ──────────────────────────────┐
+│ HttpApi endpoints → domain workflows (Effect) → repositories (Drizzle)│
+│ AI tasks behind Effect services (provider-swappable adapters)       │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ Drizzle ORM + migrations (Drizzle Kit)
+┌─────────────────── PostgreSQL + PostGIS ───────────────────────────┐
+│ normalized domain tables + JSONB for versioned config/snapshots     │
+│ full-text search + PostGIS distance; NO OpenSearch in MVP            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+- **One backend, domain-oriented modules** (`apps/api/src/domains/*`).
+  No microservices. Effect is the programming model inside the backend;
+  it does not leak into the frontends except through the shared contracts.
+- **Contracts own the boundary.** `packages/contracts` defines every
+  API request/response, AI task input/output, menu extraction schema,
+  presentation schema, and order representation exactly once, in
+  **Effect Schema** (see `docs/development/typescript.md` — no duplicate
+  Zod schemas). Frontends and backend import the same definitions;
+  TanStack Form consumes them via Standard Schema interop.
+- **Drizzle is the only persistence mapper.** Drizzle schemas live next
+  to their domain; Drizzle Kit owns migrations. Repositories are thin:
+  query + map to domain types. No repository may call AI or HTTP.
+- **TanStack Start apps are thin.** Routes load via TanStack Query
+  against the Effect API, render schema-driven UI, and hold only
+  presentation state. Business rules live in the backend or in shared
+  pure functions in `packages/*`, never duplicated in components.
+- **PostgreSQL does the heavy lifting** it is good at: relational
+  integrity, JSONB for versioned snapshots/templates/prompts, PostGIS
+  for "nearby", full-text search for dish/restaurant search. H3,
+  OpenSearch, and caches beyond HTTP/CDN are deferred until measured
+  need.
+
+### 5. How should the runtime management studio store and publish resources, prompts, and templates?
+
+One pattern for all three registries: **versioned draft → validated →
+published → audited**, with the *published version pointer* as the only
+thing the customer path reads.
+
+| Registry | Storage | Publish rule |
+|---|---|---|
+| Resources (images, banners, icons, localized content) | Binary in S3-compatible object storage (public vs private buckets); metadata + stable resource id + aliases in PostgreSQL | Swapping a resource id's target is a new version; frontends resolve ids at request/render time + cache invalidation by id+version. No redeploy. |
+| Prompts | `PromptDefinition` + `PromptVersion` rows: versioned text, model selection, parameters, variable list, input/output schema refs, status (`draft`/`published`/`retired`), audit trail | Publishing requires: schema refs resolve, fixture tests pass, previous published version retained for rollback. AI executions record `promptVersionId` + `modelId`. Published prompts can never bypass output-contract validation. |
+| Menu templates | Authored as YAML/JSON (seed + admin editor), stored as **validated JSONB** in PostgreSQL (`MenuTemplate` + `MenuTemplateVersion`): layout id, allowed controls, display/validation/ordering rules, localized strings, visual config, status | Publishing requires: control ids all exist in the supported-control registry, JSON Schema / Effect Schema validation passes, render-preview fixture passes. A new published template version invalidates presentation cache for menus using that template (by template id + version key, not by TTL alone). |
+
+Admin mutations are authenticated + authorized, audited (who, when,
+before/after version), and reversible (rollback = repoint the published
+pointer, never rewrite history). No registry may store executable code:
+templates reference component ids from a fixed renderer registry;
+prompts are data, never evaluated as code; resources are binary + metadata.
+
+### 6. What is the correct boundary between menu extraction data, templates, generated presentations, and user order state?
+
+Four layers, four owners, one direction of flow:
+
+1. **Extraction data** (`MenuSnapshot` + `MenuItem`s) — *evidence*.
+   Owned by the Menus domain. Immutable once stored; snapshots are
+   never "published". Corrections materialize a candidate snapshot
+   and, on approval, a new `PublishedMenuRevision`. Contains only
+   what was observed (unknown stays `null`/`unknown`, with
+   confidence; coverage explicit). Never contains user preferences
+   or order state.
+2. **Template** (`MenuTemplateVersion`) — *presentation rules*.
+   Owned by the Template Registry. Declares which controls/layouts may
+   be used and how. Contains no restaurant data and no user data.
+3. **Generated presentation** (`MenuPresentation`) — *derived view*.
+   Pure function: `presentation = render(publishedRevision |
+   privateSnapshot, template, locale)`. It is cacheable,
+   version-keyed by `(publishedRevisionId, templateVersionId,
+   locale)` (shared) or `(snapshotId, templateVersionId, locale)`
+   (private), and regenerable at any time. It is **not** stored as
+   the source of truth; storing it is an optimization with an
+   invalidation rule, not a new entity. The presentation embeds
+   user-independent item-level dietary evidence; the per-user
+   warning ("matches *your* allergy") is a separate overlay
+   computed from `UserPreference` + presentation evidence —
+   never baked into the shared cached presentation, never baked
+   into the snapshot.
+4. **Order state** (`OrderDraft`) — *private user selection*.
+   Owned by the Ordering domain, keyed to the user + `menuRef`
+   (pinned published revision *or* private snapshot). Holds
+   chosen items/options/quantities, free-text notes (marked
+   unconfirmed), and a computed estimated total. It references the
+   pinned source; it never mutates it. The bilingual staff view is a
+   read-only rendering of the draft (user locale + restaurant locale
+   side by side), clearly labeled as a *request to communicate*, not a
+   confirmed order.
+
+Crossing the boundary the wrong way is a bug: user prefs inside a
+snapshot, template ids invented by AI, prices computed by the LLM, or
+order state persisted in shared menu data are all rejected in review.
+
+### 7. Which dependencies or features are unnecessary for the hackathon?
+
+**Rejected dependencies** (see full table in "Recommended library list"):
+
+- **Next.js** — no concrete advantage over TanStack Start for this
+  stack (TanStack Router/Query/Form coherence, SSR/SEO already covered).
+- **OpenSearch / Elasticsearch** — Postgres full-text + PostGIS cover
+  hackathon search volume; adding a second search index is pure overhead.
+- **H3** — only if geographic price aggregation proves it needs it;
+  PostGIS aggregation is enough for the demo.
+- **Prisma** — Drizzle is lighter, SQL-first, and fits Effect +
+  migrations better; two ORMs is never justified.
+- **Microservices / message queues / event bus** — one Effect backend,
+  direct calls, no distributed-systems tax.
+- **Zod as a second schema system** — Effect Schema owns contracts;
+  Zod only via Standard Schema interop if a library demands it, never
+  hand-duplicated.
+- **AI-generated JSX / HTML / executable components** — forbidden.
+  Schema-driven renderer only.
+- **Remote CSS/JS execution, arbitrary template code** — forbidden.
+- **Heavy auth platform / paid services** — minimal session auth for
+  admin + optional user accounts; anonymous demo flow must work.
+
+**Deferred features** (explicitly not in the MVP slice): price heatmaps,
+historical price graphs, regional price comparison, receipt-based price
+authority, community reviews/ratings, full personalization engine,
+multi-city seed data beyond HCMC districts, offline mode, restaurant
+accounts / order submission / payments. Each is architecturally
+*possible* (the domain model leaves room) but none may displace the
+scan-to-order demo.
+
+### 8. How should the multi-agent harness be organized to prevent architectural drift?
+
+See `docs/agent-workflow.md` for the full harness. The anti-drift
+mechanisms, in order of strength:
+
+1. **Contracts first, code second.** No parallel implementation until
+   `packages/contracts` (Effect Schema) for the slice is merged and
+   reviewed. Shared files have a single owner; others read, never edit
+   without coordination.
+2. **One source of truth per contract** (Effect Schema). Drift is
+   usually duplicate schemas; banning duplicates removes the main
+   drift vector.
+3. **Worktrees / isolation per workstream**, with small, reviewable
+   diffs merged incrementally — never a big-bang merge at the end.
+4. **Task contracts + report templates** for every delegation
+   (objective, owned files, contracts, acceptance criteria, verification
+   commands). "Implemented successfully" without diff + tests is not
+   accepted.
+5. **Orchestrator-owned integration.** The lead agent (Muse) inspects
+   every diff, runs checks, verifies contract compatibility, and owns
+   cross-workstream integration points. Workstream agents never
+   integrate each other's work unilaterally.
+6. **Persistent context in repo files** (`docs/decisions/*.md`,
+   milestone plans), not chat history. An agent must be able to resume
+   from files alone.
+7. **Vendored library reference** (`repos/`, read-only, git-subtree
+   `--squash`) so agents read real Effect/TanStack APIs instead of
+   hallucinating them — and never import production code from it.
+
+### 9. Which decisions must be made before implementation, and which can safely wait?
+
+**Decide now (blocking BUILD):**
+
+- Schema ownership: Effect Schema is the single source of truth.
+- Money = integer minor units + currency code; timestamps =
+  `timestamptz`; PostGIS for location. (Non-negotiable; retrofitting
+  is expensive.)
+- Snapshot immutability + versioning; listed vs. paid price distinction;
+  dietary evidence tiers (known / common / confirmed / unknown).
+- Extraction → template → presentation → order boundary (§6 above).
+- No AI-generated executable UI; fixed control registry.
+- Monorepo shape, package boundaries, and who owns shared files.
+- AI provider + budget + key custody (see Blocking questions).
+- Auth model for admin + whether demo users need accounts at all.
+- The blocking questions in the table below — each names what unblocks it.
+
+**Safely defer (decide during BUILD, defaults given):**
+
+- Exact dish taxonomy / full HCMC seed dataset (seed a small curated
+  set; taxonomy evolves with real scans).
+- Full personalization ranking formula (start: hard filters + simple
+  preference-boost scoring; tune after demo works).
+- Price aggregation statistics (start: median + p25/p75 + n + warning
+  when n is small; heatmaps/graphs later).
+- Prompt wording / model choice per task (registry makes these
+  runtime-changeable; pick sane defaults, iterate on fixtures).
+- Design-token values (structure of tokens is fixed; values are
+  runtime-configurable).
+- Caching strategy beyond HTTP/CDN + version-keyed presentation cache
+  (add only on measured slowness).
+- H3, OpenSearch, queues, multi-region deployment (only on evidence).
+
+### 10. What implementation order gives us the highest probability of producing an excellent mobile-first demo?
+
+Order by **demo-critical path first, with contracts before code**:
+
+1. **M0 — Contracts, PoCs, skeleton.** Monorepo, tooling, CI checks,
+   `packages/contracts` for menu snapshot / presentation / order draft.
+   *Exit:* `bun install && turbo run check` green; contract package
+   compiles; no app code yet.
+2. **M1 — Menu extraction vertical slice (backend).** Upload →
+   AI extraction (one task, one prompt version) → schema validation →
+   snapshot persistence → admin review screen (list + correct + publish).
+   *Exit:* a real menu photo becomes a validated, publishable snapshot (candidate for a published revision).
+3. **M2 — Interactive renderer + bilingual order + persistence/reuse.**
+   Template registry (one template), presentation derivation,
+   quantity / choice / note controls, dietary annotations, estimated
+   total, OrderDraft → bilingual staff page (user locale + Vietnamese
+   originals), persistence + reuse of published revisions.
+   *Exit:* end-to-end demo works on a phone: scan → confirm → select →
+   show staff, and a second visit reuses the published revision.
+   **This is the demo gate — protect it.**
+4. **M3 — Runtime Management Studio.** Prompt/template registries,
+   media resources, scanned-menu inspect/correct/publish, read-only
+   AI Inspector. *Exit:* admin can operate the demo without code
+   changes.
+5. **M4 — Discovery (dish-first + map + dish pages).** Dish pages
+   (SSR/SEO), search, map with dish/distance/price/dietary filters,
+   restaurant pages. *Exit:* a dish page links to nearby restaurants
+   serving it.
+6. **M5 — Pricing intelligence + contributions.** Median/p25/p75 price
+   context with evidence warnings, contributions state machine +
+   moderation queue + provenance, receipts as price evidence.
+   *Exit:* price display always includes evidence count + area + date
+   range; contributions flow through moderation.
+7. **M6 — Personalization + polish + demo.** Onboarding (≤5
+   taste anchors), preference-aware ranking, polish, demo script +
+   `demo:reset` + rehearsal. *Exit:* "spicy beef under 100k, not
+   soup" returns ranked, constraint-honest results; demo rehearsal
+   passes end-to-end.
+
+Parallelize only after M0 contracts are stable (see
+`docs/agent-workflow.md`): customer UX owns M2 UI, domain/backend
+owns M1/M2 persistence, AI pipeline owns extraction quality + fixtures,
+data/admin owns M3 studio. Never parallelize M0.
+
+---
+
+## Recommended architecture
+
+**One TypeScript monorepo (Bun + Turborepo) holding two TanStack Start
+frontends (customer + admin), one Effect backend organized by domain,
+one shared Effect Schema contract package, PostgreSQL + PostGIS + JSONB
+as the only database, and S3-compatible object storage for media — with
+AI accessed only through provider-swappable Effect services behind
+per-task input/output contracts, and all runtime-configurable content
+(prompts, templates, resources, design tokens) stored as versioned data
+in PostgreSQL rather than in code or redeploys.**
+
+```
+                    ┌─────────────────────────────────────┐
+                    │  Customer app (TanStack Start)    │  mobile-first,
+                    │  Admin app    (TanStack Start)    │  SSR/SEO, maps
+                    └──────────────┬──────────────────────┘
+                                   │ HTTP + Effect Schema JSON
+                    ┌──────────────▼──────────────────────┐
+                    │  Effect API (apps/api)              │
+                    │  domains: catalog · restaurants ·  │
+                    │  discovery · menus · ordering ·    │
+                    │  pricing · contributions · identity │
+                    │  resources · prompts · templates ·  │
+                    │  admin · personalization            │
+                    │  AI services: intent · extraction · │
+                    │  translation · matching · explain  │
+                    └──────────────┬──────────────────────┘
+                                   │ Drizzle ORM
+              ┌────────────────────▼────────────────────┐
+              │  PostgreSQL + PostGIS + JSONB + FTS    │
+              │  S3-compatible storage (R2)             │
+              └─────────────────────────────────────────┘
+```
+
+Key invariants: AI never invents restaurants, prices, options, or
+safety verdicts; money is integer minor units; snapshots are immutable
+observations; templates are data, not code; order state is private.
+
+---
+
+## Proposed repository structure
+
+```
+traveevu/                                  # repo root (Darkiee12/Traveevu)
+├── AGENTS.md                              # root instructions (from this pack)
+├── README.md                              # product + setup (from docs/product.md)
+├── package.json                           # bun workspaces + turbo scripts
+├── turbo.json
+├── bun.lockb
+├── tsconfig.base.json
+├── .env.example                           # NO secrets; names only
+├── docs/
+│   ├── product.md
+│   ├── user-journeys.md
+│   ├── demo-scope.md
+│   ├── architecture.md                    # deepens this README
+│   ├── domain-model.md
+│   ├── ai-boundaries.md
+│   ├── menu-rendering.md
+│   ├── data-provenance.md
+│   ├── customer-design.md
+│   ├── admin-design.md
+│   ├── agent-workflow.md                  # from this pack
+│   ├── decisions/                         # ADRs: 0001-schema-ownership.md, …
+│   ├── development/
+│   │   ├── effect.md                      # from this pack
+│   │   ├── typescript.md                  # from this pack
+│   │   └── frontend.md                    # from this pack
+│   └── milestones/
+│       ├── M0-contracts.md
+│       ├── M1-extraction.md
+│       └── …                              # one file per milestone
+├── repos/                                 # READ-ONLY vendored lib source
+│   ├── effect/                            # git subtree --squash, pinned
+│   └── tanstack/                          # (only if needed; keep small)
+├── packages/
+│   ├── contracts/                         # ★ single source of truth
+│   │   └── src/                           # Effect Schema: api, ai, menu,
+│   │       │                              # presentation, order, admin
+│   │       └── index.ts
+│   ├── domain/                            # pure domain funcs (no I/O):
+│   │   └── src/                           # pricing, dietary tiers, matching
+│   ├── ui/                                # shared primitives (shadcn-based)
+│   └── config/                            # tsconfig/eslint/tailwind presets
+├── apps/
+│   ├── api/                               # Effect backend (one service)
+│   │   └── src/
+│   │       ├── index.ts                   # HttpApi serve + Layers
+│   │       ├── domains/                   # one dir per domain
+│   │       │   ├── catalog/
+│   │       │   ├── menus/
+│   │       │   ├── ordering/
+│   │       │   └── …/
+│   │       ├── ai/                        # task services + provider adapters
+│   │       ├── db/                        # Drizzle schema + migrations
+│   │       └── lib/                       # config, logging, errors
+│   ├── customer/                          # TanStack Start: traveler app
+│   │   └── src/
+│   │       ├── routes/                    # dishes, restaurants, menu, order
+│   │       ├── components/                # renderer + cards + map + sheets
+│   │       └── lib/
+│   └── admin/                             # TanStack Start: studio
+│       └── src/
+│           ├── routes/                    # menus, prompts, templates, resources
+│           ├── components/
+│           └── lib/
+├── skills/                                # repo-local agent skills (only if justified)
+├── fixtures/                              # AI eval fixtures (menus, receipts, queries)
+└── scripts/                               # seed, demo reset, checks
+```
+
+Ownership: `packages/contracts` — orchestrator + domain/backend agent
+jointly, single-owner-at-a-time; `apps/api` — domain/backend;
+`apps/customer` — customer UX; AI services + `fixtures/` — AI pipeline;
+`apps/admin` + registries — data/admin. Cross-boundary edits require
+orchestrator approval (see `docs/agent-workflow.md`).
+
+---
+
+## Recommended library list
+
+Pinned versions are **verified as of 2026-10-16**. Re-verify at `BUILD`
+start; if a pin moved, update this table + `docs/decisions/` rather than
+silently drifting.
+
+| Library | Pin | Reason |
+|---|---|---|
+| Bun | `1.4.x` | Fast runtime + package manager + workspaces; single toolchain for monorepo |
+| Turborepo | `2.x` | Task caching/orchestration across apps + packages |
+| TypeScript | `5.9+`, `strict` | Required by Effect 4; strict catches contract drift early |
+| Effect | `4.0.0` (stable 2026-10-01) — **all `@effect/*` pinned to the same version** | Typed services, tagged errors, Layers, retries/timeouts, observability; consolidated packages in v4 |
+| `@effect/schema` (via Effect 4) | `4.0.0` | Single contract owner; Standard Schema interop |
+| Drizzle ORM | `0.45.3` | Lightweight, SQL-first, excellent Postgres/PostGIS/JSONB support |
+| Drizzle Kit | `0.31.11` | Migrations + schema management |
+| PostgreSQL | `16+` with PostGIS | Relational + JSONB + FTS + geo in one store |
+| TanStack Start | `1.0` stable (2026-10-13); **`@tanstack/react-start >= 1.168.60`** (CVE-2026-102989) | SSR + SEO + file routing; coherent with Router/Query/Form |
+| TanStack Router / Query / Form | matching Start 1.0 peer range | Routing, server state, Standard-Schema forms; one ecosystem, fewer seams |
+| Tailwind CSS | latest v4 stable | Utility styling; pairs with shadcn |
+| shadcn/ui | latest (component source, not a versioned dep) | Accessible primitives, owned source |
+| Lucide | latest stable | Icon set |
+| Motion | latest stable | Animation (formerly Framer Motion) |
+| MapLibre GL JS | latest stable | OSM-compatible maps, no Google scraping |
+| AI provider SDK | **TBD — see Blocking questions** (behind Effect service interface; Vercel AI SDK *or* provider-native SDK *or* Effect AI — decide after Effect 4 compat check) | Provider-swappable; business code never imports a provider SDK directly |
+| `@effect/vitest` | matching Effect 4 | Effect-native testing |
+| Playwright | latest stable | Mobile-journey browser tests |
+
+### Rejected — and why
+
+| Rejected | Why |
+|---|---|
+| Next.js | No concrete technical reason it beats TanStack Start here; TanStack coherence (Router/Query/Form/Start) reduces integration seams. Reconsider only on a concrete, evidenced reason. |
+| OpenSearch / Elasticsearch | Postgres FTS + PostGIS cover hackathon search; second index = ops + sync burden with zero demo benefit. |
+| H3 | Only if geo price aggregation outgrows PostGIS; defer until measured. |
+| Prisma | Drizzle fits Effect + SQL-first migrations better; two ORMs never justified. |
+| Microservices / queues / event bus | One Effect backend; distributed-systems tax buys nothing at hackathon scale. |
+| Zod as a parallel schema system | Duplicate schemas are the #1 drift vector. Effect Schema owns contracts; Zod only via Standard Schema interop if a library forces it. |
+| AI-generated JSX / HTML / components | Security + correctness: AI emits validated structured data; a fixed renderer maps it to known React components. |
+| Google Maps / scraping | Terms + cost + fragility. OSM + MapLibre with attribution. |
+| Remote CSS/JS in templates | Unrestricted remote execution is a security hole; versioned design tokens + fixed components instead. |
+| Heavy auth / paid BaaS | Demo must work anonymously; admin needs minimal session auth. Add identity only as needed. |
+
+---
+
+## Prioritized implementation roadmap
+
+Full milestone definitions live in `docs/roadmap.md` (M0–M6).
+Summary (aligned with `docs/roadmap.md` — that file is authoritative
+for milestone scope):
+
+| Milestone | Goal | Gate |
+|---|---|---|
+| M0 | Contracts, PoCs, skeleton | `turbo run check` green; contracts compile |
+| M1 | Menu extraction vertical slice | Real photo → validated publishable snapshot |
+| M2 | Interactive renderer + bilingual order + persistence/reuse | **Demo gate:** scan → confirm → select → show staff; second visit reuses published revision |
+| M3 | Runtime Management Studio | Admin operates demo without code changes |
+| M4 | Discovery (dish-first + map + dish pages) | Dish page → nearby restaurants serving it |
+| M5 | Pricing intelligence + contributions | Price display always includes evidence; contributions flow through moderation |
+| M6 | Personalization + polish + demo | Constrained, ranked, preference-aware results + price context; demo rehearsal passes |
+
+Protect M2. Cut scope in reverse order (M6 → M4) before touching M0–M2.
+
+---
+
+## Blocking questions
+
+Each question names an **owner** and **what unblocks `BUILD`**.
+Nothing in this table is answered by guessing — each needs a named
+decision or a verified fact.
+
+### Product
+
+| # | Question | Owner | Unblocks BUILD when… |
+|---|---|---|---|
+| P1 | ~~Is anonymous demo (no account) acceptable, or must travelers sign in?~~ **RESOLVED 2026-10-16 (ADR 0001): guest-first** — browsing, scanning, order drafts need no sign-in; an explicit guest save persists preferences under the guest's anonymous identity (ADR 0005); Google Sign-In offered for cross-device persistence, order history, and persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence needs no sign-in). | Product / user | ✅ Decision recorded in `docs/auth.md` + `docs/decisions/0001-better-auth-google.md` + `docs/decisions/0003-anonymous-contributions.md` + `docs/decisions/0005-user-preference-hybrid.md` |
+| P2 | Which HCMC seed restaurants/dishes (small curated set) may we use, and under what license/permission? | Product / data | Seed list + provenance note exists; no scraped data enters the repo |
+| P3 | What exactly may the demo claim about dietary safety? Confirm the four evidence tiers (known / common / confirmed / unknown) and the "never claim safe from absence" rule in demo copy. | Product | Wording approved; renderer shows tiers, never a bare "safe" badge |
+| P4 | Demo language set: Vietnamese + English only, or more? | Product | Locale list fixed; translation scope bounded |
+
+### Data / legal
+
+| # | Question | Owner | Unblocks BUILD when… |
+|---|---|---|---|
+| D1 | Map tile provider + attribution + rate limits for the demo (OSM-compatible)? | Eng | Provider + attribution string chosen; usage terms respected |
+| D2 | Are we permitted to photograph + republish restaurant menus in the demo? Any venue opt-out process? | Product / legal | Policy written; contribution flow includes consent/removal path |
+| D3 | Receipt handling: raw images private by default — retention period + deletion path? | Eng / product | Retention + deletion rule recorded; private bucket enforced |
+| D4 | User-generated content moderation: who moderates, and what is the publish/reject SLA for the demo? | Product | One named moderator path (even if manual) exists |
+
+### AI provider / budget
+
+| # | Question | Owner | Unblocks BUILD when… |
+|---|---|---|---|
+| A1 | Which AI provider(s) + model(s) for extraction / translation / intent — and is Effect AI, Vercel AI SDK, or provider-native SDK the adapter, verified against Effect 4.0.0? | Eng (AI pipeline) | Provider + adapter chosen; keys custody decided; per-task contracts drafted |
+| A2 | Budget / rate limits for the hackathon (max tokens / calls / cost)? | Eng / organizer | Numeric cap recorded; AIExecution logging covers spend |
+| A3 | Key custody: whose key, where stored (Secure Vault / env), who rotates? | Eng | No key in repo; storage path documented |
+
+### Auth
+
+| # | Question | Owner | Unblocks BUILD when… |
+|---|---|---|---|
+| U1 | ~~Admin auth mechanism (session? magic link? single admin seed account?) and who holds admin credentials during the demo?~~ **RESOLVED 2026-10-16 (ADR 0001):** Better Auth session + server-side `RequireAdmin` (DB role). Admin granted only explicitly (existing admin or audited seed allowlist); Google sign-in never auto-grants admin. | Eng | ✅ Mechanism chosen; admin routes protected in M0 |
+| U2 | ~~Do travelers need any account for contributions, or is contribution anonymous-with-moderation?~~ **RESOLVED 2026-10-17 (ADR 0003, amending ADR 0001):** anonymous guests may *submit* menu scans, corrections, and price reports — all enter `pending_review`, never auto-published, MVP keeps manual approval. Reviews (when Review ships; deferred from MVP) + persistent contributor profiles still require Google sign-in. Scan and submit are separate actions (scanning is NOT local-only: images are processed privately server-side, temp storage + retention + disclosure — ADR 0003 §1); submitting needs explicit confirmation before extracted data is shared for moderation. Manual prices are never receipt-backed. | Product / eng | ✅ Decision recorded in `docs/decisions/0003-anonymous-contributions.md`; `auth.md`, `domain-model.md`, `data-provenance.md` reconciled |
+
+### Demo logistics
+
+| # | Question | Owner | Unblocks BUILD when… |
+|---|---|---|---|
+| G1 | Demo device + network: real phone on venue Wi-Fi? Offline fallback needed? | Demo lead | Device + network plan known; loading/error states cover the realistic failure |
+| G2 | Demo restaurant(s): one confirmed venue with a real menu we may scan on stage? | Demo lead | ≥1 real menu photo set (or explicitly labeled demo fixtures) ready for M1 |
+| G3 | Hackathon rule check: does any pre-`BUILD` artifact (fixtures, seed data, vendored `repos/`) count as "pre-built code"? | Organizer | Written confirmation; `repos/` + fixtures scoped to stay compliant |
+
+---
+
+## Status
+
+- [x] Planning pack (this directory): harness docs written, `PLANNING`-only.
+- [x] Companion docs: product / journeys / demo scope / architecture /
+      domain model / AI boundaries / menu rendering / data provenance /
+      customer + admin design.
+- [ ] Milestone files `docs/milestones/M0…M6` (to be written from
+      `docs/roadmap.md` during `PLANNING` close-out).
+- [ ] Blocking questions resolved → explicit user authorization →
+      `EXECUTION_MODE = BUILD`.
