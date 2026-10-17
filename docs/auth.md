@@ -13,8 +13,10 @@ Authentication is **Better Auth**, centralized in the Effect backend
 only initial OAuth/OIDC provider** (`socialProviders.google`). The customer
 experience stays **guest-first**: browsing, scanning, and building a
 bilingual order draft never require sign-in. Google Sign-In is offered
-when the user wants to *persist* something — save preferences/favorites/
-order history, or contribute persistent community content. The admin
+when the user wants cross-device persistence, order history, or to
+contribute persistent community content. An explicit guest save
+persists preferences under the guest's anonymous identity (ADR
+0005); sign-in claims them. The admin
 studio requires authentication **plus** separate server-side
 authorization. **Signing in with Google never automatically grants
 administrative privileges.** No custom OAuth implementation, ever.
@@ -121,9 +123,11 @@ anonymous plugin). Rules:
   else** — there is no second migration system. Re-run the CLI after
   any plugin change and review the diff.
 - **Domain tables reference `user.id` by foreign key**
-  (`UserPreference.userId`, `FavoriteDish.userId`,
-  `OrderDraft.userId`, `Contribution.userId`). Better Auth's `user`
-  table is the identity root; domain tables never duplicate identity.
+  (`UserPreference.userId`, `OrderDraft.userId`,
+  `Contribution.userId`). Better Auth's `user` table is the
+  identity root; domain tables never duplicate identity. There
+  is no `FavoriteDish` table — taste anchors live inside the
+  `UserPreference` document (ADR 0005).
 - **Never hand-write Better Auth's table shapes**, and never let
   domain logic read the `session` table directly. The only reader of
   auth tables is Better Auth itself, through `AuthService`.
@@ -178,27 +182,29 @@ anonymous plugin). Rules:
   unsubmitted image is deleted per the retention rule above.
 - **The shared menu never contains private data.** A published
   `MenuSnapshot` / contribution carries menu/price/review evidence
-  only — never `UserPreference`, `FavoriteDish`, or `OrderDraft`
-  fields.
+  only — never `UserPreference` (incl. taste anchors) or
+  `OrderDraft` fields.
 
-### 6.2 What requires sign-in — and what does not (amended by ADR 0003)
+### 6.2 What requires sign-in — and what does not (amended by ADR 0003, ADR 0005)
 
 The gate for contributions moved from *submission* to *publication*
 for verifiable evidence. Nothing anonymous is ever auto-published.
 
 | Action | Needs sign-in? | Publication |
 |---|---|---|
-| Save preferences / favorites / order history | **Yes** — Google sign-in | Private to the account |
+| Save preferences (incl. taste anchors) | **No** — an explicit guest save persists an anonymous-owned `UserPreference` row (ADR 0005); Google sign-in enables cross-device persistence | Private to the owner |
+| Save order history | **Yes** — Google sign-in | Private to the account |
 | Submit a menu scan | No (anonymous guest) | `pending_review` → manual moderator approval |
 | Submit a correction | No (anonymous guest) | `pending_review` → manual moderator approval; allergen corrections always need moderator review |
 | Submit a price report | No (anonymous guest) | `pending_review` → manual moderator approval; manual prices are never receipt-backed (ADR 0003 §3) |
 | Submit a review (deferred from MVP; when implemented) | **Yes** — Google sign-in | Moderated; opinions, never dietary/price evidence |
 | Persistent contributor profile (public history, attribution page) | **Yes** — Google sign-in | N/A |
 
-- The UI offers "Sign in with Google to save" **at the moment the
-  user tries to persist something private**, and "Sign in with
-  Google to review" for reviews — never as a gate in front of
-  scanning, ordering, or submitting evidence.
+- The UI offers "Sign in with Google" when the user wants
+  cross-device persistence, order history, or reviews — never as
+  a gate in front of scanning, ordering, saving preferences, or
+  submitting evidence. An explicit guest save persists under the
+  guest's anonymous identity (ADR 0005); sign-in claims it.
 - Public attribution for anonymous submissions is pseudonymous
   ("submitted by a traveler") — no profile link, no PII.
 
@@ -221,11 +227,16 @@ Rules:
   anonymous plugin's `onLinkAccount({ anonymousUser, newUser })`
   callback runs **before** the anonymous user is deleted. Our
   callback re-parents the guest's rows to the real account in **one
-  transaction**: `UserPreference`, `FavoriteDish`, `OrderDraft`
-  (including the in-progress draft — the user does not lose their
-  current menu or order), and `Contribution` rows in `draft` and
-  `pending_review` status. Then the anonymous user is deleted by
-  the plugin.
+  transaction**: `UserPreference` (transfer, or conflict-persist
+  — see §6.3a), `OrderDraft` (including the in-progress draft —
+  the user does not lose their current menu or order), and
+  `Contribution` rows in `draft` and `pending_review` status.
+  Before any destructive step, a conflicting guest document is
+  persisted into `PreferenceConflict` (§6.3a); the anonymous user
+  may then be deleted — the retained copy survives in
+  `PreferenceConflict`. Which hook/order guarantees
+  persist-before-delete is verified in the M0 PoC (ADR 0005 §8);
+  do not assume a particular hook is available.
 - **Claim is idempotent and must not throw away the draft.** If the
   claim transaction fails, the link must not silently discard the
   guest's data: the claim is retried / the failure is logged and
@@ -260,7 +271,7 @@ Rules:
 - **Published contributions are NOT re-parented silently.**
   A `Contribution` that is already `published` keeps its original
   attribution record; the claim moves `draft`/`pending_review`
-  contributions and private data (preferences, favorites, drafts).
+  contributions and private data (preferences, drafts).
   Published history is evidence — it is never rewritten by a link
   event.
 - **Abuse guards.** Anonymous sign-in is rate-limited per IP
@@ -280,6 +291,58 @@ Rules:
   simply starts a fresh guest session; nothing they published is
   lost (published data is attributed in history, not to the live
   anon row).
+
+### 6.3a Preference conflict on claim (ADR 0005 §3)
+
+Guest-wins is **rejected**. If the target Google account has no
+preferences, the guest document transfers (§6.3). If **both**
+have preferences:
+
+- The existing **account document stays active**; the incoming
+  guest document is **retained in a minimal `PreferenceConflict`
+  table owned by the authenticated account** until the user
+  explicitly chooses which to keep:
+  `PreferenceConflict { id, accountUserId (FK, owner),
+  guestUserId (value, not FK), incomingPreferences (validated
+  JSONB), incomingSchemaVersion, incomingRevision, detectedAt,
+  status: pending | resolved, resolution:
+  keep_account | keep_guest | discarded_expired | NULL,
+  resolvedAt }`. See `domain-model.md` §4.20.
+- **Persist-first.** The incoming document is durably persisted
+  in `PreferenceConflict` **before any destructive
+  account-linking step** (anonymous-user deletion,
+  re-parenting). The retained copy therefore survives
+  anonymous-account deletion. The exact hook/order that
+  guarantees persist-before-delete is verified in the M0 PoC —
+  do not assume a particular hook runs before deletion or is
+  even available (ADR 0005 §8). If the verified lifecycle
+  cannot guarantee persist-before-delete inside the link
+  callback, capture the snapshot at sign-in initiation (before
+  redirect to Google) as a pending conflict row instead.
+- Resolution is **lazy and non-blocking**: surfaced in
+  settings/profile ("You have preferences saved on this device
+  that differ from your account — keep which?"), never as a
+  blocking modal in the ordering flow. Ordering continues against
+  the active account document.
+- **Resolution is atomic** (single transaction): `keep_guest`
+  replaces the account row's `preferences` / `schemaVersion` /
+  `revision` with the incoming copy and marks the conflict
+  `resolved(keep_guest)`; `keep_account` marks the conflict
+  `resolved(keep_account)` and deletes the incoming document
+  from the conflict row (metadata kept). No silent overwrite
+  in either direction — never silently overwrite saved allergies,
+  dietary restrictions, or other preferences.
+- **Retention:** unresolved conflicts are retained 90 days from
+  detection (default proposal, confirm in M0), then the
+  conflict row is deleted and the deletion recorded; expiry
+  never touches the account's active preferences. The user may
+  discard the retained copy at any time (counts as a
+  `keep_account` resolution). Multiple pending conflicts are
+  allowed as separate rows; each resolves independently.
+  Anon-user pruning is unaffected by conflicts — the retained
+  copy lives in `PreferenceConflict`, not on the anonymous user.
+- Claim stays idempotent: re-running it after a completed
+  transfer/conflict-recording is a no-op.
 
 ### 6.4 Sign-in UX
 
@@ -412,7 +475,19 @@ AuthenticatedIdentity {
   an explicit confirmation. `Contribution.ownerUserId` is nullable
   (`ON DELETE SET NULL`) + immutable attribution snapshot. See
   `docs/decisions/0003-anonymous-contributions.md`.
-- **`UserPreference` / `FavoriteDish` / `OrderDraft` /
+- **`UserPreference` hybrid (ADR 0005, amends this decision):**
+  one row per user, `preferences` validated JSONB + `schemaVersion`
+  + `revision` (optimistic concurrency); taste anchors as one
+  ordered discriminated `preferences.tasteAnchors` collection
+  (`TasteAnchor`, max 5 total) — no `FavoriteDish` table. A
+  guest's explicit save persists an anonymous-owned row;
+  sign-in enables cross-device persistence. On claim: transfer
+  when the target has no preferences; when both exist, persist
+  the incoming document first into `PreferenceConflict`
+  (owned by the account), retain both + lazy atomic resolution
+  — never silent overwrite. See
+  `docs/decisions/0005-user-preference-hybrid.md`.
+- **`UserPreference` / `OrderDraft` /
   `Contribution`:** owner is a Better Auth `user.id` (anonymous or
   real). The old "anonymous session/device id" design is replaced
   by anonymous-plugin users (real rows, claimable).
@@ -421,10 +496,12 @@ AuthenticatedIdentity {
   custom auth work in any milestone.
 - **Admin design:** §9 auth section now reads: Better Auth session +
   `RequireAdmin` middleware + audited explicit grants; no auto-admin.
-- **User journeys:** sign-in appears only at save moments and for
-  persistent contributor profiles, and for reviews when Review
-  ships (deferred from MVP; ADR 0003: submitting evidence does not
-  require sign-in); the P1 demo flow has no sign-in step.
+- **User journeys:** sign-in appears for cross-device persistence,
+  order history, and persistent contributor profiles, and for
+  reviews when Review ships (deferred from MVP; ADR 0003:
+  submitting evidence does not require sign-in; ADR 0005: an
+  explicit guest save persists without sign-in); the P1 demo flow
+  has no sign-in step.
 - **No changes to:** money, snapshot immutability, template/renderer
   boundary, menu extraction contracts, pricing rules.
 
@@ -432,8 +509,15 @@ AuthenticatedIdentity {
 
 1. **Community Effect wrapper vs in-house adapter** — decided by
    M0 PoC (see §4). Default is in-house.
-2. **`onLinkAccount` failure semantics** — verify in PoC; claim must
-   be idempotent (see §6.3).
+2. **Linking lifecycle (exact) + `onLinkAccount` failure semantics** —
+   verify in PoC; claim must be idempotent (see §6.3). ADR 0005 §8:
+   verify the exact link sequence and whether any hook/order
+   guarantees persist-before-delete for a conflicting guest
+   document (or whether the snapshot must be captured at sign-in
+   initiation); what happens when the callback throws; and
+   idempotency of a re-run claim. Do not assume a particular hook
+   is available. Confirm the 90-day unresolved-conflict retention
+   default. Do not build the claim path until this is verified.
 3. **Two DB pools** (Better Auth Promise pool + Effect pool) —
    size them so their sum stays within the DB budget; verify under
    the Playwright journey.
@@ -452,7 +536,9 @@ AuthenticatedIdentity {
 6. **Anonymous-user pruning** — retention window + scheduled job;
    define in M0 (default: prune anon users with no owned rows after
    30 days; never prune anon users owning published contributions
-   without re-attribution review).
+   without re-attribution review). Preference conflicts are
+   unaffected by pruning — the retained copy lives in
+   `PreferenceConflict`, not on the anonymous user (ADR 0005 §3).
 
 ## 12. Explicit non-goals (MVP)
 

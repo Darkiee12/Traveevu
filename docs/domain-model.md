@@ -34,8 +34,9 @@ Legend: **Table** = independent identity, lifecycle, queried/joined, versioned/a
 | `MenuItem` | **Table** (child of snapshot) | Restaurant-specific item within a snapshot; maps to `Dish` optionally (`dishId` nullable — unmapped stays unmapped, never forced) |
 | `MenuItemOption` | **Value / JSONB inside MenuItem** | Sizes/modifiers/choices belonging to one item; no independent lifecycle. Validated array in JSONB |
 | `PriceObservation` | **Table** | Evidence row: source (listed vs receipt), amount, currency, time, place, confidence, provenance |
-| `UserPreference` | **Table** (user-scoped, private) | Profile: language, dietary, allergies, spice, budget, adventurousness. Editable, skippable |
-| `FavoriteDish` | **Table** (join: user ↔ dish) | Up to 5 favorites in onboarding; searchable beyond suggestions; explicit > demographic |
+| `UserPreference` | **Table** (user-scoped, private) | One row per user: `userId` (PK, FK → Better Auth `user.id`), `preferences` (validated JSONB — Effect Schema `UserPreferenceDoc`), `schemaVersion`, `revision` (optimistic concurrency), timestamps. Hybrid per ADR 0005 |
+| `FavoriteDish` | **NO table in MVP** (ADR 0005) | Replaced by `UserPreference.preferences.tasteAnchors`: one ordered, validated discriminated collection (`TasteAnchor`, max 5 total). Future arbitrary bookmarking is a separate model, not a reinterpretation of taste anchors |
+| `PreferenceConflict` | **Table** (private, ADR 0005 §3) | Minimal conflict store owned by the authenticated account: incoming guest preference document + schema version + revision, persisted before any destructive linking step; lazy atomic resolution; 90-day retention default for unresolved rows |
 | `MediaAsset` | **Table** (metadata) + object storage (bytes) | Stable resource ID; metadata in Postgres, bytes in R2; public/private flag |
 | `Contribution` | **Table** (state machine) | Wraps a scan / correction / price report / photo; tracks moderation + publication. (`review` joins as a subject type only when Review ships — deferred, see `Review`) |
 | `Review` | **DEFERRED — future independent entity, NO table in MVP** | Dish or restaurant review; provenance + moderation; distinct from price/menu evidence. NOT a value object, NOT a JSONB array on `Dish`/`Restaurant`. Do not build the table during the initial scan-to-order MVP. See §4.14 |
@@ -62,7 +63,8 @@ Dish contains allergenStatuses[] (validated values, ADR 0004 — NO Allergen / I
 MenuItem contains ingredients[] / allergenStatuses[] (optional, evidence-backed, ADR 0004)
 Dish 1──* PriceObservation    (aggregated view; observations also link Restaurant/MenuItem)
 Dish 1──* Review (dish reviews — DEFERRED, future entity, no table in MVP; see §4.14)
-Dish 1──* FavoriteDish *──1 User (via UserPreference owner)
+Dish 1──* UserPreference.tasteAnchors (dish-kind entries inside the preference doc, NOT a join table — ADR 0005; no FK, validated on write, normalized on dish merge)
+User 1──* PreferenceConflict (owned by the authenticated account — ADR 0005 §3)
 
 Restaurant 1──* MenuSnapshot (versioned, append-only)
 MenuSnapshot 1──* MenuItem
@@ -74,7 +76,6 @@ Restaurant 1──* PriceObservation
 Restaurant 1──* Review (restaurant reviews — DEFERRED, future entity, no table in MVP; see §4.14)
 
 User 1──1 UserPreference
-User 1──* FavoriteDish
 User 1──* OrderDraft
 OrderDraft 1──* OrderDraftLine (value/child: snapshot item ref + options + qty + note)
 OrderDraft ──> MenuSnapshot (references a specific snapshotVersion; never floats)
@@ -115,7 +116,7 @@ Identity for a food, independent of any restaurant.
 
 - `dishId`, `alias` (original spelling), `locale`/`language`, `source` (curated / extraction / user), `confidence`.
 - Indexed for lookup: alias matching is deterministic (normalized, diacritic-aware for Vietnamese) + AI-assisted disambiguation only when deterministic match is ambiguous. See `ai-boundaries.md`.
-- **Invariant:** Aliases never change the canonical name. Merging two dishes re-points aliases, never deletes history.
+- **Invariant:** Aliases never change the canonical name. Merging two dishes re-points aliases, never deletes history. A merge also preserves a redirect (merged-away id → canonical id) and **must** normalize `UserPreference.preferences.tasteAnchors` in every preference document (and in `PreferenceConflict` incoming documents): map `dish`-kind entries through redirects, leave `unmatched` entries untouched, deduplicate the whole collection preserving first-occurrence order, keep the ≤ 5 cap (ADR 0005 §4). Writes referencing a merged-away id are rejected; stored pre-merge ids resolve via redirects during migration.
 
 ### 4.3 `DishVariant` — NOT a table in the MVP (ADR 0002, Option A)
 
@@ -266,15 +267,90 @@ Fields: `id`, `kind`, `dishId` (nullable), `menuItemId` (nullable), `restaurantI
 - Price stats (median, p25/p75, min/max) are computed deterministically from observations, never by LLM. Display always includes observation count, area, date range, and kind mix. Insufficient evidence → "insufficient evidence", never a fabricated average.
 - Receipt images are private by default (see `data-provenance.md` §5). A receipt-derived observation publishes the *amount*, not the receipt image or PII.
 
-### 4.10 `UserPreference` (user-private)
+### 4.10 `UserPreference` (user-private) — hybrid document, ADR 0005
 
-- `userId`, `preferredLanguage`, `originCountryRegion` (optional), `ageRange` (optional, nullable), `dietaryRestrictions[]`, `allergies[]`, `religiousRequirements[]` (only if explicitly provided), `spiceTolerance`, `typicalBudget` (amount + currency, nullable), `adventurousness`, `preferredIngredients[]`, `preferredTextures[]`, `dislikedIngredients[]`.
-- **Invariants:** All nonessential fields skippable/editable. Origin/region is a *suggestion signal*, never a determinant of taste/religion/diet. Explicit preferences outrank demographic inference — always. Preferences are never published as part of shared menu data.
+One row per user. Identity stays relational; preference *content*
+is a validated document:
 
-### 4.11 `FavoriteDish`
+- `userId` — PK, FK → Better Auth `user.id` (`NOT NULL`).
+  Guest rows are anonymous-plugin users (`isAnonymous: true`),
+  claimed on sign-in (see §7 Q4, `auth.md` §6, ADR 0005 §3).
+- `preferences` — JSONB, validated by Effect Schema
+  `UserPreferenceDoc` (`packages/contracts`): `preferredLanguage`,
+  `originCountryRegion` (optional), `ageRange` (optional,
+  nullable), `dietaryRestrictions[]`, `allergies[]` (references
+  `AllergenCode`, ADR 0004), `religiousRequirements[]` (only if
+  explicitly provided), `spiceTolerance`, `typicalBudget`
+  (`Money`, nullable), `adventurousness`,
+  `preferredIngredients[]`, `preferredTextures[]`,
+  `dislikedIngredients[]`, `tasteAnchors` (see §4.11 — one
+  ordered discriminated `TasteAnchor[]` collection, max 5
+  total).
+- `schemaVersion` — document **format** version, not edit
+  history. Older documents are upgraded by tested migration
+  functions; unknown future versions are rejected on read with
+  the stored row left untouched (ADR 0005 §1.5).
+- `revision` — optimistic-concurrency counter (starts at 1, +1
+  per successful write). Writes carry the expected `revision`;
+  a mismatch fails with a typed conflict error and writes
+  nothing. `revision` is not history — no prior revisions are
+  kept.
+- `createdAt`, `updatedAt`.
+- **Invariants:** All nonessential fields skippable/editable.
+  Origin/region is a *suggestion signal*, never a determinant of
+  taste/religion/diet. Explicit preferences outrank demographic
+  inference — always. Preferences are never published as part of
+  shared menu data. Reads/writes restricted to the owning user
+  (server-side identity must equal `userId`); the MVP admin
+  studio has no read path for preferences. Allergies / dietary /
+  religious information never appears in contributions,
+  telemetry, or logs. Account deletion removes the row (and
+  that account's `PreferenceConflict` rows — §4.20);
+  contributions survive per ADR 0003.
 
-- `userId`, `dishId`, `rank` (1–5), `source` (`onboarding | search | discovery`).
-- Onboarding: select up to 5. Searchable beyond initial suggestions. Used as similarity signal for recommendations (grilled → grilled, etc.), not as a filter that excludes everything else.
+### 4.11 `tasteAnchors` — NOT a `FavoriteDish` table (ADR 0005)
+
+- `preferences.tasteAnchors`: one ordered, validated
+  discriminated collection, **maximum 5 entries total**,
+  duplicates rejected, order preserved as the user arranged
+  it:
+
+```ts
+TasteAnchor =
+  | { kind: TasteAnchorKind.Dish, dishId: DishId }
+  | { kind: TasteAnchorKind.Unmatched, label: string }
+```
+
+  `TasteAnchorKind` is a string-valued TS enum (`dish`,
+  `unmatched`) — see `typescript.md`, "String enums for domain
+  vocabularies". Onboarding taste references — a similarity
+  signal for recommendations (grilled → grilled, etc.), not a
+  filter that excludes everything else, and not a general
+  bookmark list.
+- Onboarding: select up to 5 (dish + unmatched combined).
+  Searchable beyond initial suggestions. Free-text labels
+  that match no canonical dish are stored as `unmatched`
+  entries — similarity explanation only, never presented as a
+  canonical dish.
+- Duplicates rejected: same `dishId` twice, or same label
+  twice (after trim + casefold). A dish entry and an unmatched
+  entry with the same text are not duplicates.
+- Writes validate that every `dish` entry references a
+  canonical `Dish` (exists, not merged-away — a merged-away
+  id is rejected and the client resolves it via the redirect,
+  §4.2). `unmatched` labels are non-empty strings (max 200
+  chars). Only `dish` entries are verified catalog references.
+- AI may suggest resolutions (unmatched label → canonical
+  dish); conversion happens only on explicit user
+  confirmation — replace in place (position preserved), then
+  re-validate; if that dish is already present, drop the
+  converted entry instead of duplicating.
+- Future arbitrary bookmarking is modeled separately if needed;
+  it is never a reinterpretation of `tasteAnchors`.
+- Promotion to a join table requires a new ADR (triggers:
+  independent favorite management, relational integrity,
+  cross-user analytics, sophisticated personalization —
+  ADR 0005 §6).
 
 ### 4.12 `MediaAsset`
 
@@ -358,6 +434,31 @@ Reserved future shape (not implemented in the MVP):
 - `id`, `task`, `promptVersionId` (nullable), `modelId`, `startedAt`, `latencyMs`, `tokensIn/out` (if available), `estimatedCost` (if available), `inputRefs` (snapshot/contribution ids — no raw PII), `validationErrors[]`, `status` (`success | validation_failed | provider_error | retry_then_success`), `outputRef`.
 - **Invariant:** No sensitive PII in logs. No raw user profile, no receipt image bytes, no full prompt with user data — only references + metadata + validation outcomes.
 
+### 4.20 `PreferenceConflict` (private) — ADR 0005 §3
+
+Minimal conflict store owned by the authenticated account.
+The incoming guest document is persisted here **before any
+destructive account-linking step**, so the retained copy
+survives anonymous-account deletion.
+
+- `id`, `accountUserId` (FK → `user.id`, owner, `NOT NULL`),
+  `guestUserId` (value, not FK — anon may be deleted; audit
+  only), `incomingPreferences` (validated JSONB
+  `UserPreferenceDoc`), `incomingSchemaVersion`,
+  `incomingRevision`, `detectedAt`, `status`
+  (`pending | resolved`), `resolution`
+  (`keep_account | keep_guest | discarded_expired | NULL`),
+  `resolvedAt` (nullable).
+- **Invariants:** private to the owning account (no admin read
+  path in MVP, never logged, never public). Resolution is
+  atomic (single transaction — ADR 0005 §3). Unresolved rows
+  are retained 90 days from detection (default proposal,
+  confirm in M0), then deleted with the deletion recorded;
+  expiry never touches the account's active preferences.
+  Account deletion removes the account's conflict rows.
+  Multiple pending conflicts allowed as separate rows, each
+  resolving independently.
+
 ## 5. The four distinctions that matter most
 
 ### 5.1 Dish vs MenuItem
@@ -398,7 +499,7 @@ See §4.9. Different sources, different strength, never silently merged. Receipt
 
 | Shared (public, moderated) | User-private (never shared) |
 |---|---|
-| Dish, Restaurant, MenuSnapshot (published), PriceObservation (published, de-identified) | UserPreference, FavoriteDish, OrderDraft |
+| Dish, Restaurant, MenuSnapshot (published), PriceObservation (published, de-identified) | UserPreference (incl. `tasteAnchors`), PreferenceConflict, OrderDraft |
 | MediaAsset (public kind) | Receipt images, draft scans, order history |
 | Prompt/Template versions (published) | AIExecution input payloads with PII |
 
@@ -441,14 +542,23 @@ AI-extracted information carries confidence + provenance. LLM-generated descript
    by canonical `Dish`. Promotion to a table later requires a new ADR
    + migration from observed labels.
 4. **Auth model for UserPreference/OrderDraft** — RESOLVED 2026-10-16
-   (ADR 0001), amended 2026-10-17 (ADR 0003): Better Auth owns
-   identity (`user` / `session` / `account` / `verification`
-   tables). Guests are anonymous-plugin users (real rows,
-   `isAnonymous: true`), so `UserPreference` / `FavoriteDish` /
+   (ADR 0001), amended 2026-10-17 (ADR 0003, ADR 0005): Better
+   Auth owns identity (`user` / `session` / `account` /
+   `verification` tables). Guests are anonymous-plugin users
+   (real rows, `isAnonymous: true`), so `UserPreference` /
    `OrderDraft` FK to `user.id` with `NOT NULL` owners; sign-in
-   claims guest rows via `onLinkAccount`. Exception (ADR 0003):
-   `Contribution.ownerUserId` is **nullable** (`ON DELETE SET NULL`,
-   never `CASCADE`) + an immutable attribution snapshot, so
-   contributions survive anonymous-user deletion on linking/prune
-   with original provenance intact. See `docs/auth.md` §6.
+   claims guest rows via `onLinkAccount`. Guest preferences stay
+   client-side until explicitly saved; an explicit guest save may
+   mint an anonymous identity + persist the document; Google
+   sign-in enables cross-device persistence. **Claim conflict
+   (ADR 0005 §3):** if the target account has no preferences,
+   transfer the guest document; if both have preferences,
+   preserve the account document, persist the incoming guest
+   document first into `PreferenceConflict` (§4.20), and
+   resolve lazily in settings — never silently overwrite.
+   Exception (ADR 0003): `Contribution.ownerUserId` is
+   **nullable** (`ON DELETE SET NULL`, never `CASCADE`) + an
+   immutable attribution snapshot, so contributions survive
+   anonymous-user deletion on linking/prune with original
+   provenance intact. See `docs/auth.md` §6.
 5. **Moderation capacity** — who reviews contributions in the demo? Define a minimal moderation path in M2 (at least: approve/reject + reason).

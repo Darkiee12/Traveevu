@@ -141,7 +141,7 @@ Ingredients and allergen statuses are validated values on `Dish`
   implies the photo stays on the device.
 - Menu photos: private until published. Published display uses the derived structured menu, not necessarily the raw photo. If a raw photo is ever displayed publicly, it needs explicit moderation + a check for incidental PII (people, license plates, etc. in the background).
 - User-generated content (menu photos, food photos, receipts, price observations, corrections — reviews when Review ships; deferred from MVP) requires moderation + provenance. See §6.
-- **Do not publish the user's private profile or ordering preferences** as part of shared menu data. Publishing a contribution publishes the *menu/price evidence* (review evidence when Review ships; deferred), never `UserPreference`, `FavoriteDish`, or `OrderDraft`.
+- **Do not publish the user's private profile or ordering preferences** as part of shared menu data. Publishing a contribution publishes the *menu/price evidence* (review evidence when Review ships; deferred), never `UserPreference` (incl. taste anchors), `PreferenceConflict` (retained incoming preference documents — private to the owning account, never published/logged), or `OrderDraft`.
 - **Invariant:** the shared/published menu (`MenuSnapshot` /
   contribution payload) must never contain private user
   preferences or order details. Extraction and publication

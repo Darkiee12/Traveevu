@@ -33,7 +33,7 @@ First launch, or user taps "Personalize" / edits profile from settings.
 1. Welcome screen: one sentence of value ("Tell us what you like — we'll translate it into local dishes."), two buttons: **Get started** / **Skip for now**.
 2. Language: pick preferred language (default: device locale; options include English, Vietnamese for prototype). This sets customer-facing UI + translation target.
 3. Origin (optional): country/region picker with search. Used only to suggest familiar dishes. Copy explicitly states it is optional and never determines religion, dietary rules, or taste.
-4. Favorite dishes: search + select **up to 5** dishes. System suggests familiar dishes based on origin (if given), but the user can search any dish not shown. Selected dishes appear as removable chips. Counter shows `n / 5`.
+4. Favorite dishes (taste anchors — `tasteAnchors: TasteAnchor[]`, ADR 0005): search + select **up to 5** entries total (dish + unmatched combined). System suggests familiar dishes based on origin (if given), but the user can search any dish not shown. Selected dishes appear as removable chips. Counter shows `n / 5`.
 5. Dietary needs (all optional, multi-select + free text): dietary restrictions, allergies, religious dietary requirements (only when explicitly provided by the user — never pre-filled from origin). Each selection shows a one-line explanation of how it will be used ("We'll hide dishes that commonly contain this and flag uncertainty.").
 6. Taste + budget (optional, one screen, sliders/chips): spice tolerance (none → love heat), willingness to try unfamiliar foods (cautious → adventurous), typical budget per meal (ranges in user's currency; stored as currency + band, not a precise number).
 7. Done: "You're set." → lands on dish discovery with 2–3 starter recommendations and a visible **Edit preferences** affordance. Skipped users land on the same screen with generic popular dishes and a non-blocking "Personalize" banner.
@@ -47,7 +47,7 @@ User completes steps 1–5 in under ~90 seconds, selects 2–3 favorites, sees i
 | State | Behavior |
 |---|---|
 | User skips everything | Full app remains usable; generic ranking; banner offers personalization later. No blocking. |
-| Favorite dish not found in search | Free-text entry allowed; stored as a user-provided dish label with `unmatched` status. Used for similarity explanation only, never presented as a canonical dish. |
+| Favorite dish not found in search | Free-text entry allowed; stored as a `TasteAnchor` with `kind: unmatched` (ADR 0005 §1.2). Used for similarity explanation only, never presented as a canonical dish. AI may suggest a resolution; conversion to a `dish` entry happens only on explicit user confirmation. |
 | User selects 5 favorites, tries a 6th | Inline message "You can pick up to 5 — remove one to add another." No error modal. |
 | User changes origin after picking favorites | Favorites are kept; suggestions refresh. No silent deletion. |
 | Network fails mid-onboarding | Selections persist locally; sync retries silently; user can continue. |
@@ -60,7 +60,7 @@ Within 15–30s the user sees the welcome screen, understands the single action 
 ### Acceptance criteria
 
 - [ ] Entire onboarding completable or skippable in ≤ 90s on mobile.
-- [ ] Favorite-dish picker supports search beyond initial suggestions; max 5 enforced inline.
+- [ ] Taste-anchor picker (user-facing: "favorite dishes") supports search beyond initial suggestions; max 5 enforced inline.
 - [ ] No field infers religion, dietary rules, or taste from nationality/origin.
 - [ ] All nonessential fields skippable; skip path yields a usable app.
 - [ ] Preferences editable after onboarding without restart.
@@ -263,6 +263,6 @@ The Share / Keep-private choice is one screen, one tap each, with a plain-langua
 ## Cross-Journey Notes
 
 - **Navigation:** Bottom nav (mobile): Discover · Map · Scan · Saved / Profile. Scan is always one tap away.
-- **Saved state:** Favorite dishes, saved restaurants, and recent menus persist across sessions for signed-in users (Better Auth + Google). Guests hold an in-progress draft on the device via an anonymous-plugin session; signing in claims it into the account (`onLinkAccount`) without losing the current menu/order. Sign-in is offered at save moments and for persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence does not require sign-in), never as a gate in front of scanning, ordering, or submitting evidence. See `docs/auth.md` §6.
+- **Saved state:** Taste anchors, saved restaurants, and recent menus persist across sessions for signed-in users (Better Auth + Google). Guests hold an in-progress draft on the device via an anonymous-plugin session; an explicit guest save persists preferences under the guest's anonymous identity (ADR 0005); signing in claims guest data into the account (`onLinkAccount`) without losing the current menu/order. If the account and the guest both have preferences, the account document stays active and the incoming guest document is persisted first into `PreferenceConflict` until the user chooses in settings — never silently overwritten (ADR 0005 §3). Sign-in is offered for cross-device persistence, order history, and persistent contributor profiles, and for reviews when Review ships (deferred from MVP; ADR 0003: submitting evidence does not require sign-in), never as a gate in front of scanning, ordering, saving preferences, or submitting evidence. See `docs/auth.md` §6.
 - **Offline:** Reading a previously loaded menu / order summary must work without network where feasible; scanning requires network for AI extraction (stated honestly in UI).
 - **Language switching:** Changing preferred language re-renders customer views immediately; staff view always preserves original names regardless of UI language.
